@@ -14,8 +14,10 @@ The first complete user journey will be:
 4. Upload other local videos to the same Media section when needed.
 5. Open a video in a non-destructive editor.
 6. Crop, add text, choose a font/color, create a mixed-color background, split the timeline, and remove unwanted sections.
-7. Render an Instagram-compatible MP4.
-8. Save the result in a separate **Edited Videos** section.
+7. Use the in-editor AI chat to draft, rewrite, or improve the post caption.
+8. Review and manually apply the chosen caption to the project.
+9. Render an Instagram-compatible MP4.
+10. Save the result in a separate **Edited Videos** section.
 
 Private posts, Stories, login bypasses, DRM bypasses, and bulk account downloads are outside the planned scope.
 
@@ -30,6 +32,7 @@ flowchart LR
     E --> F[Media worker]
     F --> G[Instagram extractor]
     F --> H[FFmpeg editor and renderer]
+    B --> I[OpenAI Responses API]
     G --> D
     H --> D
     F --> C
@@ -48,6 +51,7 @@ flowchart LR
 | Job queue | Redis + BullMQ | Long-running downloads and renders outside web requests |
 | Database | PostgreSQL | Metadata, captions, projects, edit instructions, and job state |
 | File storage | S3-compatible storage such as Cloudflare R2 | Source videos, uploads, thumbnails, and exports |
+| Caption assistant | OpenAI Responses API | Project-specific caption chat and structured caption suggestions |
 
 The web request will never stay open for a full video download or render. The API creates a background job and the browser reads its progress using a job ID.
 
@@ -106,6 +110,24 @@ Editing is non-destructive. The source video is never modified; the browser save
 - Controls include selected swatches, custom color, color stops, and gradient angle.
 - Browser shows a live CSS/canvas preview.
 - Worker creates the same gradient and composites the cropped video above it.
+
+#### AI caption assistant
+
+- Add a collapsible **AI Caption** chat panel inside the editor; it is part of the editor, not a separate page.
+- The user can ask for a new caption or request changes such as shorter, longer, Hindi, Hinglish, English, professional, casual, emoji-light, or hashtag suggestions.
+- Give the assistant only the current project's approved context: existing caption, creator notes, selected tone/language, and optional transcript when the user chooses to include it.
+- Return one to three structured suggestions containing `caption`, `hashtags`, and a short `reason`.
+- Provide **Use caption**, **Copy**, and **Try again** actions for every suggestion.
+- **Use caption** places the selected result into the normal editable caption field. The user must review and save it; AI never publishes or silently overwrites a caption.
+- Preserve a project-specific multi-turn chat so follow-ups such as “shorter karo” have the previous suggestion as context.
+- Store application conversation history in our own database and call the OpenAI Responses API with `store: false`; retention follows the project's own data policy.
+- Keep the model configurable through `OPENAI_CAPTION_MODEL` instead of hardcoding a model name.
+- Keep `OPENAI_API_KEY` only in the backend secret store. Never expose it in browser JavaScript, return it through an API, or commit it to GitHub.
+- Apply per-user message/token limits, timeouts, retry rules, and usage logging to control cost and abuse.
+
+This is an OpenAI API integration, not an embedded ChatGPT website or a connection to the user's personal ChatGPT subscription. API usage and billing belong to the OpenAI API project configured by the application owner.
+
+Sources: [OpenAI Responses API](https://developers.openai.com/api/reference/cli/resources/responses/methods/create) and [OpenAI API authentication guidance](https://platform.openai.com/docs/api-reference/backward-compatibility)
 
 #### Split and remove
 
@@ -181,6 +203,8 @@ Source: [Meta Instagram API documentation](https://www.postman.com/meta/instagra
 | `users` | `id`, identity-provider ID, timestamps |
 | `media_assets` | owner, source type, object key, thumbnail key, caption, duration, dimensions, size, status, `expires_at` |
 | `edit_projects` | owner, source asset, name, `edit_spec` JSONB, version, timestamps |
+| `ai_caption_threads` | owner, project, selected tone/language, created and updated times |
+| `ai_caption_messages` | thread, role, sanitized content, response ID, token usage, timestamp |
 | `render_jobs` | project, status, progress, error code, attempts, worker timestamps |
 | `exports` | owner, project, object key, thumbnail key, duration, dimensions, size, created time |
 
@@ -208,6 +232,9 @@ Clients receive short-lived signed URLs and never receive storage credentials.
 | `DELETE` | `/api/media/:assetId` | Delete an owned source asset |
 | `POST` | `/api/projects` | Create an edit project from a Media asset |
 | `PATCH` | `/api/projects/:projectId` | Save the validated edit specification |
+| `GET` | `/api/projects/:projectId/caption-chat` | Load the project's caption conversation |
+| `POST` | `/api/projects/:projectId/caption-chat/messages` | Send a prompt and stream structured caption suggestions |
+| `POST` | `/api/projects/:projectId/caption-chat/apply` | Apply a selected suggestion to the editable project caption |
 | `POST` | `/api/projects/:projectId/renders` | Queue an Instagram-ready export |
 | `GET` | `/api/exports` | List Edited Videos |
 | `DELETE` | `/api/exports/:exportId` | Delete an owned export |
@@ -223,6 +250,9 @@ Every asset/project lookup includes the authenticated owner ID; knowing another 
 - Run `yt-dlp` and FFmpeg with argument arrays, not shell-interpolated commands.
 - Isolate workers from the public API and restrict outbound hosts.
 - Use signed object URLs, encrypt secrets, and redact extractor logs.
+- Keep the OpenAI API key server-side and out of client bundles, logs, and repository files.
+- Send only the minimum caption context needed; do not send the complete source video unless a future feature explicitly requires and discloses it.
+- Rate-limit AI requests and record per-user usage/cost metadata without logging secrets.
 - Automatically remove expired sources and failed partial uploads.
 - Make cleanup idempotent so database and storage retries are safe.
 - Maintain a report/takedown path and download only content the user owns or has permission to use.
@@ -236,6 +266,7 @@ Every asset/project lookup includes the authenticated owner ID; knowing another 
 | `feature/instagram-downloader` | Link inspection, download jobs, caption extraction, and source normalization |
 | `feature/media-library` | Uploads, temporary storage, caption editing, and Media UI |
 | `feature/video-editor` | Crop, text, colors, gradient background, timeline split/delete, and edit JSON |
+| `feature/ai-caption-assistant` | In-editor OpenAI chat, structured caption suggestions, history, limits, and apply flow |
 | `feature/export-library` | Render queue, Instagram-compatible exports, and Edited Videos UI |
 | `infra/platform` | Database, Redis, object storage, authentication, deployment, and observability |
 
@@ -264,6 +295,7 @@ Feature branches start from `develop`. Small pull requests merge into `develop`;
 - Four-font and five-color text system.
 - Five direct background-color options, an HTML custom-color input, and hex gradients.
 - Split, remove, undo, redo, and autosave.
+- In-editor AI caption chat, structured suggestions, and manual apply/save flow.
 
 ### Phase 4 — render and Edited Videos
 
@@ -286,5 +318,7 @@ Feature branches start from `develop`. Small pull requests merge into `develop`;
 - Names/files for the four bundled fonts.
 - Exact five approved text colors.
 - Exact five predefined background colors; custom colors will use `<input type="color">`.
+- OpenAI API model, monthly budget, per-user quota, and chat-retention period.
+- Whether optional video transcripts should be generated automatically or only on request.
 - Cloud provider for PostgreSQL, Redis, object storage, web app, and workers.
 - Free-plan duration/storage limits and whether paid plans are needed.
