@@ -98,9 +98,12 @@ Editing is non-destructive. The source video is never modified; the browser save
 
 #### Mixed-color background
 
-- User enters two or three HTML hex colors such as `#FF3E81` and `#7A5CFF`.
-- Every value is validated as a six-digit hex color.
-- Controls include color stops and gradient angle.
+- Show **5 predefined background-color swatches** directly in the editor for one-click selection.
+- Add a native HTML `<input type="color">` for custom background colors.
+- Display the selected custom value as an editable hex field such as `#FF3E81`; validate it as a six-digit hex color before saving.
+- Support a solid background or a gradient made from two or three color stops.
+- Preset and custom colors can be mixed in the same gradient.
+- Controls include selected swatches, custom color, color stops, and gradient angle.
 - Browser shows a live CSS/canvas preview.
 - Worker creates the same gradient and composites the cropped video above it.
 
@@ -259,7 +262,7 @@ Feature branches start from `develop`. Small pull requests merge into `develop`;
 - Video preview and timeline.
 - Crop presets and custom crop.
 - Four-font and five-color text system.
-- HTML hex gradient backgrounds.
+- Five direct background-color options, an HTML custom-color input, and hex gradients.
 - Split, remove, undo, redo, and autosave.
 
 ### Phase 4 — render and Edited Videos
@@ -282,5 +285,6 @@ Feature branches start from `develop`. Small pull requests merge into `develop`;
 - Exact source retention period; current working default is 7 days.
 - Names/files for the four bundled fonts.
 - Exact five approved text colors.
+- Exact five predefined background colors; custom colors will use `<input type="color">`.
 - Cloud provider for PostgreSQL, Redis, object storage, web app, and workers.
 - Free-plan duration/storage limits and whether paid plans are needed.
