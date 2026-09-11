@@ -23,7 +23,10 @@ export function createQueue(repo, root) {
       repo.put("job", { ...job, status: "running", progress: 5 });
       await writeFile(specPath, JSON.stringify(payload));
       const result = await new Promise((resolve, reject) => {
-        const proc = spawn(python, [worker, specPath], { windowsHide: true });
+        const proc = spawn(python, [worker, specPath], {
+          windowsHide: true,
+          env: { ...process.env, NODE_BINARY: process.execPath },
+        });
         let output = "",
           error = "";
         const timeout = setTimeout(() => {

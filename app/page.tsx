@@ -251,8 +251,11 @@ export default function Studio() {
                   <Download size={23} />
                 </div>
                 <div>
-                  <strong>From Instagram to your workspace</strong>
-                  <p>Import a public Reel with its original caption.</p>
+                  <strong>Bring a video link to your workspace</strong>
+                  <p>
+                    Instagram, YouTube or TikTok — with its caption when
+                    available.
+                  </p>
                 </div>
                 <button className="subtle" onClick={() => setImporting(true)}>
                   Paste a link <ArrowUpRight size={16} />
@@ -311,7 +314,13 @@ export default function Studio() {
                           </div>
                         )}
                         <span className="source-tag">
-                          {m.source === "instagram" ? "Instagram" : "Uploaded"}
+                          {(
+                            {
+                              instagram: "Instagram",
+                              youtube: "YouTube",
+                              tiktok: "TikTok",
+                            } as Record<string, string>
+                          )[m.source] || "Uploaded"}
                         </span>
                         {m.duration && (
                           <span className="duration">{clock(m.duration)}</span>
@@ -531,7 +540,10 @@ export default function Studio() {
               <Download />
             </div>
             <h2>Bring your footage in.</h2>
-            <p>Paste a public Instagram link or upload a video.</p>
+            <p>
+              Paste a public Instagram, YouTube or TikTok video link, or upload
+              a video. Up to 15 minutes and 300 MB.
+            </p>
             <form
               onSubmit={(e) => {
                 e.preventDefault();
@@ -547,11 +559,11 @@ export default function Studio() {
               }}
             >
               <label>
-                Instagram link
+                Video link
                 <input
                   type="url"
                   required
-                  placeholder="https://www.instagram.com/reel/…"
+                  placeholder="Instagram, YouTube or TikTok URL"
                   value={url}
                   onChange={(e) => setUrl(e.target.value)}
                 />

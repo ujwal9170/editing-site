@@ -14,20 +14,17 @@ import path from "node:path";
 import { z } from "zod";
 import { createRepository } from "./repository.mjs";
 import { createQueue } from "./jobs.mjs";
-import {
-  instagramUrl,
-  initialEdit,
-  validateEdit,
-} from "../shared/validation.mjs";
+import { videoLink, initialEdit, validateEdit } from "../shared/validation.mjs";
 
 export async function createApp({
   dataDir = process.env.DATA_DIR || "runtime",
   logger = false,
+  queueFactory = createQueue,
 } = {}) {
   const root = path.resolve(dataDir);
   await mkdir(root, { recursive: true });
   const repo = createRepository(root),
-    queue = createQueue(repo, root);
+    queue = queueFactory(repo, root);
   // One-time migration for development projects saved before Reel-only canvases.
   for (const project of repo.list("project")) {
     if (project.edit?.canvas?.aspectRatio !== "9:16") {
@@ -176,7 +173,7 @@ export async function createApp({
     return reply.code(202).send({ job, media });
   });
   app.post("/api/downloads", (req, reply) => {
-    const url = instagramUrl(req.body?.url);
+    const { url, source, label } = videoLink(req.body?.url);
     if (req.body?.confirmed !== true)
       throw new Error("Confirm permission to use this video.");
     if (
@@ -185,13 +182,13 @@ export async function createApp({
     )
       return reply.code(429).send({ error: "Queue is full. Please wait." });
     const media = repo.put("media", {
-      name: "Instagram video",
+      name: `${label} video`,
       caption: "",
-      source: "instagram",
+      source,
       sourceUrl: url,
       status: "processing",
     });
-    const job = importJob(media, { action: "download", url });
+    const job = importJob(media, { action: "download", url, platform: source });
     return reply.code(202).send({ job, media });
   });
   app.patch("/api/media/:id", (req) => {

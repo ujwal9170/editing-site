@@ -5,6 +5,7 @@ Files are named by the API. FFmpeg receives argument arrays, never a shell comma
 import json
 from contextlib import redirect_stdout
 import math
+import os
 import re
 import subprocess
 import sys
@@ -52,23 +53,45 @@ def normalize(source, target):
     return probe(target)
 
 
+def download_limit(info, *, incomplete=False):
+    if info.get('is_live') or info.get('live_status') in ('is_live', 'is_upcoming'):
+        return 'Live streams are not supported. Use a finished video.'
+    if (info.get('duration') or 0) > 900:
+        return 'Video exceeds 15 minutes.'
+
+
+def download_options(job, root):
+    return {
+        'quiet': True, 'no_warnings': True, 'noprogress': True,
+        'logtostderr': True, 'noplaylist': True, 'playlist_items': '1',
+        'allowed_extractors': ['^instagram$', '^youtube$', '^tiktok$', '^vm\\.tiktok$'],
+        'js_runtimes': {'node': {'path': os.environ.get('NODE_BINARY', 'node')}},
+        'socket_timeout': 25, 'retries': 2,
+        'format': 'bestvideo*+bestaudio/best', 'merge_output_format': 'mp4',
+        'ffmpeg_location': FFMPEG, 'max_filesize': 300 * 1024 * 1024,
+        'outtmpl': str(root / (job['id'] + '-download.%(ext)s')),
+        'match_filter': download_limit,
+    }
+
+
 def import_media(job, root):
     meta = {}
     if job['action'] == 'download':
         import yt_dlp
-        options = {'quiet': True, 'no_warnings': True, 'noprogress': True, 'logtostderr': True, 'noplaylist': True, 'playlist_items': '1', 'socket_timeout': 25, 'retries': 2, 'format': 'bestvideo*+bestaudio/best', 'merge_output_format': 'mp4', 'ffmpeg_location': FFMPEG, 'max_filesize': 300 * 1024 * 1024, 'outtmpl': str(root / (job['id'] + '-download.%(ext)s'))}
-        def limit(info, *, incomplete=False):
-            if (info.get('duration') or 0) > 900:
-                return 'Video exceeds 15 minutes.'
-        options['match_filter'] = limit
+        options = download_options(job, root)
         with yt_dlp.YoutubeDL(options) as ydl:
             info = ydl.extract_info(job['url'], download=True)
-        if info.get('entries'):
-            info = next(x for x in info['entries'] if x)
-        meta = {'name': (info.get('title') or 'Instagram video')[:200], 'caption': (info.get('description') or '')[:8000], 'creator': info.get('uploader') or ''}
+        if info and 'entries' in info:
+            info = next((x for x in info['entries'] if x), None)
+        if not info:
+            raise ValueError('The platform did not return a downloadable public video.')
+        rejection = download_limit(info)
+        if rejection:
+            raise ValueError(rejection)
+        meta = {'name': (info.get('title') or 'Imported video')[:200], 'caption': (info.get('description') or '')[:8000], 'creator': info.get('uploader') or ''}
         candidates = [p for p in root.glob(job['id'] + '-download.*') if p.suffix not in ['.part', '.ytdl']]
         if not candidates:
-            raise ValueError('Instagram did not return a downloadable public video.')
+            raise ValueError('The platform did not return a downloadable public video within the size limit.')
         source = max(candidates, key=lambda p: p.stat().st_size)
     else:
         source = root / job['input']

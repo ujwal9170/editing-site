@@ -1,6 +1,6 @@
 # Frame / Editing Site
 
-A modular Instagram video workspace: import a clip and caption, keep it in Media, edit it, and save an MP4 plus its post caption in Edited Videos.
+A modular Instagram, YouTube and TikTok video workspace: import a clip and caption, keep it in Media, edit it, and save a Reel-format MP4 plus its post caption in Edited Videos.
 
 **Status: runnable development version.** The website and worker are implemented. This is a shared workspace for a small team; separate user accounts and production cloud services are still planned. AI caption generation is intentionally deferred.
 
@@ -37,7 +37,8 @@ Optional settings are documented in `.env.example`. Copy it to `.env` when overr
 
 ## Working features
 
-- Public Instagram Reel/video-post import via `yt-dlp`, including the original caption. Instagram availability/rate limits still apply; no login bypass is used.
+- Public Instagram Reel/video-post, YouTube video/Shorts and TikTok video import via `yt-dlp`, including caption/description when available. Paste a direct link, `youtu.be` link, or TikTok `vm`/`vt`/`/t/` share link. The platform is detected automatically and shown in Media. A YouTube link with a playlist parameter imports only the selected video; profile links, whole playlists, and active/upcoming live streams are not supported.
+- Imports retain the 15-minute/300 MB limits. Private, login-gated, age/region-restricted videos and platform rate limits can prevent downloads; no access-control bypass is used. TikTok must be reachable from the backend's network. The installed `yt-dlp[default]` package includes YouTube's EJS support, and the worker uses this app's Node executable for JavaScript processing.
 - Device uploads up to 300 MB and 15 minutes, local thumbnails, searchable Media library, caption editing, downloads, and 7-day source retention.
 - Saved projects with serialized autosave, revision-conflict detection, editable captions, and undo/redo for video edits.
 - Fixed 9:16 Reel canvas (1080×1920), fill-frame crop, adjustable crop and fit-full-video.
@@ -49,7 +50,7 @@ Optional settings are documented in `.env.example`. Copy it to `.env` when overr
 - FFmpeg MP4 export with H.264, AAC 48 kHz, 30 fps, even dimensions, `yuv420p`, fast-start, 20 Mbps video cap and preserved captions as separate text downloads.
 - Export library with playback, video/caption downloads and deletion. Source/project stay intact when deleting an export.
 
-Source imports are converted to a high-quality H.264 editing copy (CRF 18). This is not a bit-for-bit copy of Instagram's original file. Export is another encode. Instagram upload acceptance has not been tested against a real account.
+Source imports are converted to a high-quality H.264 editing copy (CRF 18). This is not a bit-for-bit copy of the platform's original file. Export is another encode. Instagram upload acceptance has not been tested against a real account.
 
 ## Structure and future changes
 
@@ -57,7 +58,7 @@ Source imports are converted to a high-quality H.264 editing copy (CRF 18). This
 app/                 Next.js application, shared theme and workspace screen
 components/          Editor and its tool panels
 lib/                 Frontend API, canvas drawing, audio orchestration, types
-shared/              Server-validated edit contract and Instagram URL rules
+shared/              Server-validated edit contract and supported video URL rules
 server/app.mjs       Fastify routes and workspace access checks
 server/repository.mjs SQLite persistence adapter
 server/jobs.mjs      Serial media-job runner and worker protocol
@@ -85,6 +86,8 @@ node scripts/smoke.mjs
 ```
 
 The smoke check uploads a synthetic six-second stereo clip, verifies range playback, saves crop/overlay/caption edits, tests stale-write rejection, removes the middle two seconds and verifies a four-second 1080×1920 Reel export. Tests also cover FFT/STFT reconstruction. Real musical separation quality should be compared with the user's previously tested Kim Vocal 2 implementation before public release; synthetic tests establish execution/alignment, not perceptual quality.
+
+Multi-platform validation covers supported URL forms, permission checks, platform tagging, queue routing, extractor selection, live/duration limits and the stdout protocol. A public YouTube sample completed a real download and normalization during local verification. The TikTok sample reached its extractor but the host connection timed out; successful TikTok downloading still needs verification on a network that can reach TikTok.
 
 ## Deployment and access
 

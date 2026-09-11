@@ -85,6 +85,66 @@ export function instagramUrl(raw) {
     throw new Error("Enter a public Instagram Reel or video-post link.");
   return `https://www.instagram.com${url.pathname.replace(/\/$/, "")}/`;
 }
+export function videoLink(raw) {
+  const error =
+    "Paste a public Instagram, YouTube or TikTok video link (not a profile or playlist).";
+  let url;
+  try {
+    url = new URL(z.string().trim().max(2048).parse(raw));
+  } catch {
+    throw new Error(error);
+  }
+  if (url.protocol !== "https:" || url.username || url.password || url.port)
+    throw new Error(error);
+  const host = url.hostname;
+  if (["instagram.com", "www.instagram.com"].includes(host))
+    return {
+      url: instagramUrl(url.href),
+      source: "instagram",
+      label: "Instagram",
+    };
+  if (
+    ["youtube.com", "www.youtube.com", "m.youtube.com", "youtu.be"].includes(
+      host,
+    )
+  ) {
+    const id =
+      host === "youtu.be"
+        ? /^\/([\w-]{11})\/?$/.exec(url.pathname)?.[1]
+        : url.pathname === "/watch"
+          ? url.searchParams.getAll("v").length === 1
+            ? url.searchParams.get("v")
+            : null
+          : /^\/(?:shorts|embed|live)\/([\w-]{11})\/?$/.exec(url.pathname)?.[1];
+    if (id && /^[\w-]{11}$/.test(id))
+      return {
+        url: `https://www.youtube.com/watch?v=${id}`,
+        source: "youtube",
+        label: "YouTube",
+      };
+  }
+  if (["tiktok.com", "www.tiktok.com", "m.tiktok.com"].includes(host)) {
+    if (
+      /^\/@[\w.-]+\/video\/\d{10,25}\/?$/.test(url.pathname) ||
+      /^\/t\/[A-Za-z0-9]{4,80}\/?$/.test(url.pathname)
+    )
+      return {
+        url: `https://www.tiktok.com${url.pathname.replace(/\/$/, "")}/`,
+        source: "tiktok",
+        label: "TikTok",
+      };
+  }
+  if (
+    ["vm.tiktok.com", "vt.tiktok.com"].includes(host) &&
+    /^\/[A-Za-z0-9]{4,80}\/?$/.test(url.pathname)
+  )
+    return {
+      url: `https://${host}${url.pathname.replace(/\/$/, "")}/`,
+      source: "tiktok",
+      label: "TikTok",
+    };
+  throw new Error(error);
+}
 export function initialEdit(durationMs) {
   return {
     version: 1,

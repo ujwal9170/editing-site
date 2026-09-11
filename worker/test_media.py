@@ -2,6 +2,7 @@
 import io
 import json
 import unittest
+from pathlib import Path
 from contextlib import redirect_stdout, redirect_stderr
 from unittest.mock import patch
 
@@ -11,6 +12,18 @@ from worker import media
 
 
 class WorkerProtocolTests(unittest.TestCase):
+    def test_downloaders_and_limits(self):
+        options = media.download_options({'id': 'test'}, Path('.'))
+        with yt_dlp.YoutubeDL(options) as ydl:
+            self.assertEqual(set(ydl._ies), {'Instagram', 'Youtube', 'TikTok', 'TikTokVM'})
+        self.assertTrue(options['noprogress'])
+        self.assertTrue(options['noplaylist'])
+        self.assertIn('node', options['js_runtimes'])
+        self.assertIsNone(media.download_limit({'duration': 60}))
+        self.assertIsNotNone(media.download_limit({'duration': 901}))
+        self.assertIsNotNone(media.download_limit({'is_live': True}))
+        self.assertIsNotNone(media.download_limit({'live_status': 'is_upcoming'}))
+
     def test_download_progress_cannot_contaminate_result(self):
         result = {'file': 'sample.mp4', 'caption': 'Caption with emojis 🎬'}
 

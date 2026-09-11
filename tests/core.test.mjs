@@ -7,6 +7,7 @@ import {
   initialEdit,
   validateEdit,
   instagramUrl,
+  videoLink,
 } from "../shared/validation.mjs";
 import { createRepository } from "../server/repository.mjs";
 import { createApp } from "../server/app.mjs";
@@ -27,6 +28,91 @@ test("URL normalization rejects non-Instagram and credential-bearing URLs", () =
   ])
     assert.throws(() => instagramUrl(url));
 });
+test("video links normalize supported platforms without accepting arbitrary URLs", () => {
+  for (const url of [
+    "https://youtu.be/BaW_jenozKc?si=tracking",
+    "https://m.youtube.com/watch?v=BaW_jenozKc&list=ignored&t=5",
+    "https://www.youtube.com/shorts/BaW_jenozKc",
+    "https://youtube.com/embed/BaW_jenozKc",
+  ])
+    assert.deepEqual(videoLink(url), {
+      source: "youtube",
+      label: "YouTube",
+      url: "https://www.youtube.com/watch?v=BaW_jenozKc",
+    });
+  for (const url of [
+    "https://www.tiktok.com/@creator/video/1234567890123456789?is_from_webapp=1",
+    "https://vm.tiktok.com/ZM123456/",
+    "https://vt.tiktok.com/ZM123456/",
+    "https://www.tiktok.com/t/ZM123456/",
+  ])
+    assert.equal(videoLink(url).source, "tiktok");
+  assert.equal(
+    videoLink(" https://instagram.com/reel/ABC123/?igsh=test ").source,
+    "instagram",
+  );
+  for (const url of [
+    "https://youtube.com.evil.test/watch?v=BaW_jenozKc",
+    "https://tiktok.com@127.0.0.1/@user/video/1234567890123456789",
+    "http://youtu.be/BaW_jenozKc",
+    "https://youtube.com:444/watch?v=BaW_jenozKc",
+    "https://youtube.com/playlist?list=abc",
+    "https://youtube.com/watch?v=short",
+    "https://youtube.com/watch?v=BaW_jenozKc&v=BaW_jenozKc",
+    "https://tiktok.com/@creator",
+    "https://www.tiktok.com/@creator/live",
+    "https://vm.tiktok.com/redirect/extra?url=http://localhost",
+    "https://127.0.0.1/video.mp4",
+  ])
+    assert.throws(() => videoLink(url));
+});
+
+test("download API routes all three sources to the same import queue", async () => {
+  const root = mkdtempSync(path.join(tmpdir(), "frame-links-"));
+  const queued = [];
+  const app = await createApp({
+    dataDir: root,
+    queueFactory: () => ({
+      busy: false,
+      add(type, payload) {
+        queued.push(payload);
+        return { id: "test-job", type, status: "queued" };
+      },
+    }),
+  });
+  try {
+    for (const [source, url] of [
+      ["instagram", "https://instagram.com/reel/ABC123/"],
+      ["youtube", "https://youtu.be/BaW_jenozKc"],
+      ["tiktok", "https://vm.tiktok.com/ZM123456/"],
+    ]) {
+      assert.equal(
+        (
+          await app.inject({
+            method: "POST",
+            url: "/api/downloads",
+            payload: { url },
+          })
+        ).statusCode,
+        400,
+      );
+      const response = await app.inject({
+        method: "POST",
+        url: "/api/downloads",
+        payload: { url, confirmed: true },
+      });
+      assert.equal(response.statusCode, 202);
+      assert.equal(response.json().media.source, source);
+      assert.equal(queued.at(-1).platform, source);
+      assert.equal(queued.at(-1).url, videoLink(url).url);
+    }
+    assert.equal((await app.inject("/api/media")).json().length, 3);
+  } finally {
+    await app.close();
+    rmSync(root, { recursive: true });
+  }
+});
+
 test("edit validation rejects out-of-bounds crops, overlaps and an empty timeline", () => {
   const edit = initialEdit(10000);
   assert.deepEqual(validateEdit(edit, 10000), edit);
