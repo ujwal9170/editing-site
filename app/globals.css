@@ -587,6 +587,47 @@ header {
   width: 50px;
   margin-bottom: 20px;
 }
+.caption-dialog {
+  position: fixed;
+  inset: 0;
+  margin: auto;
+  width: min(640px, calc(100vw - 32px));
+  height: fit-content;
+  max-height: calc(100dvh - 32px);
+  color: var(--text);
+}
+.caption-dialog::backdrop {
+  background: #000a;
+  backdrop-filter: blur(6px);
+}
+.caption-dialog-header {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding-right: 24px;
+}
+.caption-dialog-header h2 {
+  margin: 0;
+  font-size: 22px;
+}
+.caption-video-name {
+  overflow-wrap: anywhere;
+}
+.caption-full-text {
+  width: 100%;
+  min-height: 180px;
+  max-height: 45vh;
+  resize: vertical;
+  font-size: 16px;
+  line-height: 1.6;
+  white-space: pre-wrap;
+}
+.caption-dialog .caption-copy-status {
+  min-height: 20px;
+  margin: 12px 0;
+}
 .modal > p {
   font-size: 14px;
   margin: 9px 0 22px;

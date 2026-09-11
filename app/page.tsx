@@ -20,6 +20,7 @@ import {
 import { api, fileUrl, clock, size } from "@/lib/api";
 import type { Media, Project, Export, Job } from "@/lib/types";
 import Editor from "@/components/Editor";
+import CaptionPreview from "@/components/CaptionPreview";
 import { useWebMCP } from "@/lib/useWebMCP";
 
 export default function Studio() {
@@ -38,6 +39,7 @@ export default function Studio() {
     [authed, setAuthed] = useState<boolean | null>(null),
     [password, setPassword] = useState(""),
     [caption, setCaption] = useState<Media | null>(null),
+    [captionPreview, setCaptionPreview] = useState<Export | null>(null),
     [watch, setWatch] = useState<Export | null>(null);
   const input = useRef<HTMLInputElement>(null);
   useWebMCP(media, authed);
@@ -440,12 +442,13 @@ export default function Studio() {
                         <div className="card-footer">
                           <span>{size(x.size)}</span>
                           <div>
-                            <a
-                              title="Download caption"
-                              href={fileUrl("export", x.id, "caption")}
+                            <button
+                              title="Preview caption"
+                              aria-label={`Preview caption for ${x.name}`}
+                              onClick={() => setCaptionPreview(x)}
                             >
                               <Captions size={18} />
-                            </a>
+                            </button>
                             <a
                               title="Download MP4"
                               href={fileUrl("export", x.id, "file", true)}
@@ -657,6 +660,13 @@ export default function Studio() {
             </button>
           </section>
         </div>
+      )}
+      {captionPreview && (
+        <CaptionPreview
+          key={captionPreview.id}
+          item={captionPreview}
+          onClose={() => setCaptionPreview(null)}
+        />
       )}
       {watch && (
         <div className="modal-backdrop">
