@@ -125,6 +125,24 @@ def audio(job, root):
     return {'file': target.name, 'duration': info['duration'], 'size': target.stat().st_size}
 
 
+def isolate(job, root):
+    # Bulk instrument-removal queue: mux the source's own video (stream-copied,
+    # zero re-encode) with the browser-isolated vocal track, producing a new
+    # standalone media item. No crop/overlay/trim -- that stays Editor-only.
+    source = root / job['input']
+    info = probe(source)
+    audio_upload = root / job['audioFile']
+    audio_info = probe(audio_upload)
+    if abs(audio_info['duration'] - info['duration']) > 0.5:
+        raise ValueError('Isolated audio must match the full source duration.')
+    target = root / (job['id'] + '.mp4')
+    run(['-i', str(source), '-i', str(audio_upload), '-map', '0:v:0', '-map', '1:a:0', '-c:v', 'copy', '-c:a', 'aac', '-b:a', '192k', '-ar', '48000', '-ac', '2', '-shortest', '-movflags', '+faststart', str(target)])
+    audio_upload.unlink(missing_ok=True)
+    thumb = root / (job['id'] + '.jpg')
+    thumbnail(target, thumb)
+    return {'duration': info['duration'], 'width': info['width'], 'height': info['height'], 'hasAudio': True, 'file': target.name, 'thumbnail': thumb.name, 'size': target.stat().st_size}
+
+
 def render(job, root):
     spec = job['spec']
     if spec['canvas']['aspectRatio'] != '9:16':
@@ -176,7 +194,7 @@ def execute(job):
     with redirect_stdout(sys.stderr):
         root = Path(job['root']).resolve()
         action = job['action']
-        result = import_media(job, root) if action in ['download', 'import'] else audio(job, root) if action == 'audio' else render(job, root)
+        result = import_media(job, root) if action in ['download', 'import'] else audio(job, root) if action == 'audio' else isolate(job, root) if action == 'isolate' else render(job, root)
     print(json.dumps(result))
 
 

@@ -16,13 +16,22 @@ import {
   Trash2,
   Captions,
   Music2,
+  RotateCw,
+  AlertCircle,
 } from "lucide-react";
-import { api, fileUrl, clock, size } from "@/lib/api";
+import { api, fileUrl, clock, size, awaitJob } from "@/lib/api";
 import type { Media, Project, Export, Job } from "@/lib/types";
 import Editor from "@/components/Editor";
 import CaptionPreview from "@/components/CaptionPreview";
 import ProjectCard from "@/components/ProjectCard";
+import MediaCard from "@/components/MediaCard";
 import { useWebMCP } from "@/lib/useWebMCP";
+
+type QueueItem = {
+  media: Media;
+  status: "queued" | "processing" | "done" | "failed";
+  detail: string;
+};
 
 export default function Studio() {
   const [view, setView] = useState("media"),
@@ -41,9 +50,94 @@ export default function Studio() {
     [password, setPassword] = useState(""),
     [caption, setCaption] = useState<Media | null>(null),
     [captionPreview, setCaptionPreview] = useState<Export | null>(null),
-    [watch, setWatch] = useState<Export | null>(null);
+    [watch, setWatch] = useState<Export | null>(null),
+    [mediaTab, setMediaTab] = useState<"all" | "queue" | "removed">("all"),
+    [menuOpen, setMenuOpen] = useState<string | null>(null),
+    [queueTick, setQueueTick] = useState(0);
   const input = useRef<HTMLInputElement>(null);
+  const queueRef = useRef<QueueItem[]>([]);
+  const runningRef = useRef(false);
   useWebMCP(media, authed);
+  function bump() {
+    setQueueTick((t) => t + 1);
+  }
+  function addToQueue(item: Media) {
+    if (
+      queueRef.current.some(
+        (q) =>
+          q.media.id === item.id &&
+          (q.status === "queued" || q.status === "processing"),
+      )
+    )
+      return;
+    queueRef.current = [
+      ...queueRef.current,
+      { media: item, status: "queued", detail: "Waiting…" },
+    ];
+    setMenuOpen(null);
+    bump();
+  }
+  function removeQueueItem(id: string) {
+    queueRef.current = queueRef.current.filter(
+      (q) => q.media.id !== id || q.status === "processing",
+    );
+    bump();
+  }
+  function retryQueueItem(id: string) {
+    const row = queueRef.current.find((q) => q.media.id === id);
+    if (row && row.status === "failed") {
+      row.status = "queued";
+      row.detail = "Waiting…";
+      bump();
+      runQueue();
+    }
+  }
+  async function runQueue() {
+    if (runningRef.current) return;
+    runningRef.current = true;
+    bump();
+    for (;;) {
+      const next = queueRef.current.find((q) => q.status === "queued");
+      if (!next) break;
+      next.status = "processing";
+      next.detail = "Reading source audio…";
+      bump();
+      try {
+        const { separateAudio } = await import("@/lib/audio");
+        const blob = await separateAudio(
+          fileUrl("media", next.media.id, "audioFile"),
+          "vocals-only",
+          (s) => {
+            next.detail = s;
+            bump();
+          },
+          new AbortController().signal,
+        );
+        next.detail = "Uploading isolated vocals…";
+        bump();
+        const body = new FormData();
+        body.append("file", blob, "processed.wav");
+        const { job } = await api(`/media/${next.media.id}/vocal-isolation`, {
+          method: "POST",
+          body,
+        });
+        await awaitJob(job.id, (j) => {
+          next.detail = `Finishing… ${j.progress || 0}%`;
+          bump();
+        });
+        next.status = "done";
+        next.detail = "Instruments removed.";
+        bump();
+        await refresh();
+      } catch (e: any) {
+        next.status = "failed";
+        next.detail = e.message || "Failed.";
+        bump();
+      }
+    }
+    runningRef.current = false;
+    bump();
+  }
   async function refresh() {
     const [m, p, e, j] = await Promise.all([
       api<Media[]>("/media"),
@@ -106,6 +200,11 @@ export default function Studio() {
     });
   }
   const active = jobs.filter((j) => ["running", "queued"].includes(j.status));
+  void queueTick;
+  const queue = queueRef.current,
+    queuedCount = queue.filter((q) => q.status === "queued").length,
+    sourceMedia = media.filter((m) => m.source !== "vocal-isolated"),
+    isolatedMedia = media.filter((m) => m.source === "vocal-isolated");
   async function deleteMedia(item: Media) {
     const linked = projects.filter((p) => p.mediaId === item.id);
     const message = linked.length
@@ -276,7 +375,7 @@ export default function Studio() {
                 <Plus size={18} /> Import video
               </button>
             </div>
-            {view === "media" && (
+            {view === "media" && mediaTab === "all" && (
               <div className="import-strip">
                 <div className="import-icon">
                   <Download size={23} />
@@ -295,113 +394,173 @@ export default function Studio() {
             )}
             <div className="toolbar">
               <div className="tabs">
-                <button className="selected">
-                  {view === "media"
-                    ? "All media"
-                    : view === "exports"
-                      ? "Exports"
-                      : "Projects"}{" "}
-                  <span>
-                    {view === "media"
-                      ? media.length
-                      : view === "exports"
-                        ? exports.length
-                        : projects.length}
-                  </span>
-                </button>
+                {view === "media" ? (
+                  <>
+                    <button
+                      className={mediaTab === "all" ? "selected" : ""}
+                      onClick={() => setMediaTab("all")}
+                    >
+                      All media <span>{sourceMedia.length}</span>
+                    </button>
+                    <button
+                      className={mediaTab === "queue" ? "selected" : ""}
+                      onClick={() => setMediaTab("queue")}
+                    >
+                      Instrument Remover <span>{queue.length}</span>
+                    </button>
+                    <button
+                      className={mediaTab === "removed" ? "selected" : ""}
+                      onClick={() => setMediaTab("removed")}
+                    >
+                      Instruments removed <span>{isolatedMedia.length}</span>
+                    </button>
+                  </>
+                ) : (
+                  <button className="selected">
+                    {view === "exports" ? "Exports" : "Projects"}{" "}
+                    <span>
+                      {view === "exports" ? exports.length : projects.length}
+                    </span>
+                  </button>
+                )}
               </div>
-              <label className="search">
-                <Search size={17} />
-                <input
-                  aria-label="Search videos"
-                  placeholder="Search videos…"
-                  value={query}
-                  onChange={(e) => setQuery(e.target.value)}
-                />
-              </label>
+              {!(view === "media" && mediaTab === "queue") && (
+                <label className="search">
+                  <Search size={17} />
+                  <input
+                    aria-label="Search videos"
+                    placeholder="Search videos…"
+                    value={query}
+                    onChange={(e) => setQuery(e.target.value)}
+                  />
+                </label>
+              )}
             </div>
+            {view === "media" && mediaTab === "queue" ? (
+              <div className="queue-panel">
+                <div className="queue-toolbar">
+                  <div>
+                    <strong>
+                      {queue.length} file{queue.length === 1 ? "" : "s"} in
+                      queue
+                    </strong>
+                    <p>Processed one at a time — never in parallel.</p>
+                  </div>
+                  <button
+                    className="primary"
+                    disabled={!queuedCount || runningRef.current}
+                    onClick={() => runQueue()}
+                  >
+                    {runningRef.current ? (
+                      <LoaderCircle className="spin" size={18} />
+                    ) : (
+                      <Music2 size={18} />
+                    )}
+                    Remove All
+                  </button>
+                </div>
+                {queue.length === 0 ? (
+                  <div className="empty">
+                    <Music2 size={36} />
+                    <h2>Nothing queued yet.</h2>
+                    <p>
+                      Add a clip from All media using its ⋯ menu on the card.
+                    </p>
+                    <button
+                      className="subtle"
+                      onClick={() => setMediaTab("all")}
+                    >
+                      Go to All media <ArrowUpRight size={16} />
+                    </button>
+                  </div>
+                ) : (
+                  <div className="queue-list">
+                    {queue.map((q) => (
+                      <div className="queue-row" key={q.media.id}>
+                        <img
+                          src={fileUrl("media", q.media.id, "thumbnail")}
+                          alt=""
+                        />
+                        <div className="queue-row-body">
+                          <h3>{q.media.name}</h3>
+                          <p>{q.detail || "Waiting…"}</p>
+                        </div>
+                        <span className={`queue-status ${q.status}`}>
+                          {q.status === "queued" && "Queued"}
+                          {q.status === "processing" && (
+                            <LoaderCircle className="spin" size={15} />
+                          )}
+                          {q.status === "done" && <Check size={15} />}
+                          {q.status === "failed" && <AlertCircle size={15} />}
+                        </span>
+                        {q.status === "queued" && (
+                          <button
+                            aria-label={`Remove ${q.media.name} from queue`}
+                            onClick={() => removeQueueItem(q.media.id)}
+                          >
+                            <X size={16} />
+                          </button>
+                        )}
+                        {q.status === "failed" && (
+                          <button
+                            aria-label={`Retry ${q.media.name}`}
+                            onClick={() => retryQueueItem(q.media.id)}
+                          >
+                            <RotateCw size={16} />
+                          </button>
+                        )}
+                      </div>
+                    ))}
+                  </div>
+                )}
+              </div>
+            ) : (
             <div className="media-grid">
               {view === "media" &&
-                media
+                mediaTab === "all" &&
+                sourceMedia
                   .filter((m) =>
                     m.name.toLowerCase().includes(query.toLowerCase()),
                   )
                   .map((m) => (
-                    <article className="media-card" key={m.id}>
-                      <button
-                        className="thumbnail"
-                        onClick={() => m.status === "ready" && editMedia(m)}
-                        disabled={m.status !== "ready"}
-                      >
-                        {m.status === "ready" ? (
-                          <img
-                            src={fileUrl("media", m.id, "thumbnail")}
-                            alt={m.name}
-                          />
-                        ) : (
-                          <div className="placeholder">
-                            <Film />
-                            <span>{m.status}</span>
-                          </div>
-                        )}
-                        <span className="source-tag">
-                          {(
-                            {
-                              instagram: "Instagram",
-                              youtube: "YouTube",
-                              tiktok: "TikTok",
-                            } as Record<string, string>
-                          )[m.source] || "Uploaded"}
-                        </span>
-                        {m.duration && (
-                          <span className="duration">{clock(m.duration)}</span>
-                        )}
-                        <span className="edit-hover">
-                          <Scissors size={18} /> Open in editor
-                        </span>
-                      </button>
-                      <div className="card-body">
-                        <h3>{m.name}</h3>
-                        <div className="meta">
-                          {m.width
-                            ? `${m.width} × ${m.height}`
-                            : "Preparing media"}{" "}
-                          <span>·</span> {size(m.size)}
-                        </div>
-                        <div className="card-footer">
-                          <span>
-                            {m.expiresAt
-                              ? `${Math.max(0, Math.ceil((m.expiresAt - Date.now()) / 86400_000))} days left`
-                              : m.status}
-                          </span>
-                          <div>
-                            <button
-                              aria-label={`Caption for ${m.name}`}
-                              onClick={() => setCaption(m)}
-                            >
-                              <Captions size={17} />
-                            </button>
-                            {m.status === "ready" && (
-                              <a
-                                aria-label={`Download ${m.name}`}
-                                href={fileUrl("media", m.id, "file", true)}
-                              >
-                                <Download size={17} />
-                              </a>
-                            )}
-                            <button
-                              aria-label={`Delete ${m.name}`}
-                              disabled={busy || m.status === "processing"}
-                              onClick={() => deleteMedia(m)}
-                            >
-                              <Trash2 size={16} />
-                            </button>
-                          </div>
-                        </div>
-                      </div>
-                    </article>
+                    <MediaCard
+                      key={m.id}
+                      media={m}
+                      busy={busy}
+                      onOpen={() => editMedia(m)}
+                      onCaption={() => setCaption(m)}
+                      onDelete={() => deleteMedia(m)}
+                      queueMenu={{
+                        open: menuOpen === m.id,
+                        queued: queue.some(
+                          (q) =>
+                            q.media.id === m.id &&
+                            (q.status === "queued" ||
+                              q.status === "processing"),
+                        ),
+                        onToggle: () =>
+                          setMenuOpen(menuOpen === m.id ? null : m.id),
+                        onAdd: () => addToQueue(m),
+                      }}
+                    />
                   ))}
-              {view === "media" && (
+              {view === "media" &&
+                mediaTab === "removed" &&
+                isolatedMedia
+                  .filter((m) =>
+                    m.name.toLowerCase().includes(query.toLowerCase()),
+                  )
+                  .map((m) => (
+                    <MediaCard
+                      key={m.id}
+                      media={m}
+                      busy={busy}
+                      onOpen={() => editMedia(m)}
+                      onCaption={() => setCaption(m)}
+                      onDelete={() => deleteMedia(m)}
+                    />
+                  ))}
+              {view === "media" && mediaTab === "all" && (
                 <button
                   className="upload-card"
                   onClick={() => input.current?.click()}
@@ -496,6 +655,7 @@ export default function Studio() {
                     </article>
                   ))}
             </div>
+            )}
             {view !== "media" &&
               !(view === "exports" ? exports : projects).length && (
                 <div className="empty">
@@ -515,6 +675,16 @@ export default function Studio() {
                   </button>
                 </div>
               )}
+            {view === "media" && mediaTab === "removed" && !isolatedMedia.length && (
+              <div className="empty">
+                <Music2 size={36} />
+                <h2>No instrument-removed clips yet.</h2>
+                <p>Run the Instrument Remover queue to see results here.</p>
+                <button className="subtle" onClick={() => setMediaTab("queue")}>
+                  Go to Instrument Remover <ArrowUpRight size={16} />
+                </button>
+              </div>
+            )}
             {jobs.some((j) => j.status === "failed") && (
               <details className="job-errors">
                 <summary>Recent processing issues</summary>
@@ -541,6 +711,9 @@ export default function Studio() {
           e.target.value = "";
         }}
       />
+      {menuOpen && (
+        <div className="menu-overlay" onClick={() => setMenuOpen(null)} />
+      )}
       {importing && (
         <div className="modal-backdrop">
           <section

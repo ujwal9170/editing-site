@@ -226,10 +226,24 @@ export async function createApp({
       .parse(req.body);
     return repo.put("media", { ...item, ...data });
   });
+  function isolating(id) {
+    return repo
+      .list("job")
+      .some(
+        (j) =>
+          ["queued", "running"].includes(j.status) &&
+          j.type === "isolate" &&
+          j.mediaId === id,
+      );
+  }
   app.delete("/api/media/:id", async (req) => {
     const item = get("media", req.params.id);
     const linked = repo.list("project").filter((p) => p.mediaId === item.id);
-    if (item.status === "processing" || linked.some((p) => projectBusy(p.id)))
+    if (
+      item.status === "processing" ||
+      isolating(item.id) ||
+      linked.some((p) => projectBusy(p.id))
+    )
       throw Object.assign(
         new Error(
           "This video has processing in progress. Wait for it to finish before deleting.",
@@ -253,6 +267,42 @@ export async function createApp({
     const records = [{ kind: "media", ...item }, ...editRecords(linked)];
     await removeRecords(records);
     return { ok: true, deletedEdits: linked.length };
+  });
+  app.post("/api/media/:id/vocal-isolation", async (req, reply) => {
+    const item = mediaReady(req.params.id);
+    const file = await upload(req, ".isolate-upload");
+    const derived = repo.put("media", {
+      name: `${item.name} · instruments removed`,
+      caption: item.caption,
+      source: "vocal-isolated",
+      sourceMediaId: item.id,
+      status: "processing",
+    });
+    const job = queue.add(
+      "isolate",
+      {
+        action: "isolate",
+        mediaId: item.id,
+        root,
+        input: item.file,
+        audioFile: file.name,
+        id: derived.id,
+      },
+      async (result) => {
+        repo.put("media", {
+          ...derived,
+          ...result,
+          status: "ready",
+          expiresAt: Date.now() + ttl,
+        });
+        return derived.id;
+      },
+      async () => {
+        repo.put("media", { ...derived, status: "failed" });
+        await rm(path.join(root, file.name), { force: true });
+      },
+    );
+    return reply.code(202).send({ job, media: derived });
   });
   function projectBusy(id) {
     return (

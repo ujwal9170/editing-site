@@ -3,6 +3,7 @@ export type Media = {
   name: string;
   caption: string;
   source: string;
+  sourceMediaId?: string;
   status: string;
   duration: number;
   width: number;
