@@ -14,7 +14,7 @@ The first complete user journey will be:
 4. Upload other local videos to the same Media section when needed.
 5. Open a video in a non-destructive editor.
 6. Crop, add text, choose a font/color, create a mixed-color background, split the timeline, and remove unwanted sections.
-7. Use the in-editor AI chat to draft, rewrite, or improve the post caption.
+7. Use either text chat or approved timeline screenshots to draft, rewrite, or improve the post caption.
 8. Review and manually apply the chosen caption to the project.
 9. Render an Instagram-compatible MP4.
 10. Save the result in a separate **Edited Videos** section.
@@ -51,7 +51,7 @@ flowchart LR
 | Job queue | Redis + BullMQ | Long-running downloads and renders outside web requests |
 | Database | PostgreSQL | Metadata, captions, projects, edit instructions, and job state |
 | File storage | S3-compatible storage such as Cloudflare R2 | Source videos, uploads, thumbnails, and exports |
-| Caption assistant | OpenAI Responses API | Project-specific caption chat and structured caption suggestions |
+| Caption assistant | OpenAI Responses API | Text-based caption chat and caption generation from approved timeline frames |
 
 The web request will never stay open for a full video download or render. The API creates a background job and the browser reads its progress using a job ID.
 
@@ -113,13 +113,31 @@ Editing is non-destructive. The source video is never modified; the browser save
 
 #### AI caption assistant
 
-- Add a collapsible **AI Caption** chat panel inside the editor; it is part of the editor, not a separate page.
-- The user can ask for a new caption or request changes such as shorter, longer, Hindi, Hinglish, English, professional, casual, emoji-light, or hashtag suggestions.
-- Give the assistant only the current project's approved context: existing caption, creator notes, selected tone/language, and optional transcript when the user chooses to include it.
+- Add a collapsible **AI Caption** panel inside the editor; it is part of the editor, not a separate page.
+- Show two clear modes in a tab or segmented control: **Chat / Rewrite** and **Analyze video**.
+
+##### Mode 1 — Chat / Rewrite
+
+- This is a normal text-only chat. The user can provide an existing caption, paragraph, phrase, rough idea, or direct instruction.
+- The assistant can create a new caption, paraphrase the supplied text, or make changes such as shorter, longer, Hindi, Hinglish, English, professional, casual, emoji-light, or hashtag suggestions.
+- Preserve a project-specific multi-turn conversation so follow-ups such as “shorter karo” or “more casual” retain the previous suggestion as context.
+- Give the assistant only the approved text context: current caption, creator notes, selected tone, language, and the user's messages. Timeline screenshots are not sent in this mode.
+
+##### Mode 2 — Analyze video
+
+- Sample still frames from the project's current edited timeline. Only enabled segments are sampled, so a clip removed with **Delete** is never included.
+- Select a small configurable set of representative timestamps; the first version will default to 6 frames and allow 4–8 frames.
+- Generate compressed temporary JPEG or WebP screenshots and display them as a timestamped review strip before any AI request is made.
+- Let the user remove an unsuitable frame or refresh the selection, then explicitly choose **Generate from video**.
+- Send only the approved screenshots, their timestamps, and optional text context to a vision-capable model through multiple Responses API `input_image` items. Do not upload the complete video.
+- Generate captions according to visible subjects, actions, setting, and on-screen text. Screenshot analysis alone cannot understand music, spoken dialogue, or other audio; an optional transcript can be added later as a separately disclosed feature.
+- Delete temporary screenshots immediately after the response or after a short failure/abandonment TTL. They do not become permanent Media assets.
+
+##### Shared result flow
+
 - Return one to three structured suggestions containing `caption`, `hashtags`, and a short `reason`.
 - Provide **Use caption**, **Copy**, and **Try again** actions for every suggestion.
 - **Use caption** places the selected result into the normal editable caption field. The user must review and save it; AI never publishes or silently overwrites a caption.
-- Preserve a project-specific multi-turn chat so follow-ups such as “shorter karo” have the previous suggestion as context.
 - Store application conversation history in our own database and call the OpenAI Responses API with `store: false`; retention follows the project's own data policy.
 - Keep the model configurable through `OPENAI_CAPTION_MODEL` instead of hardcoding a model name.
 - Keep `OPENAI_API_KEY` only in the backend secret store. Never expose it in browser JavaScript, return it through an API, or commit it to GitHub.
@@ -127,7 +145,9 @@ Editing is non-destructive. The source video is never modified; the browser save
 
 This is an OpenAI API integration, not an embedded ChatGPT website or a connection to the user's personal ChatGPT subscription. API usage and billing belong to the OpenAI API project configured by the application owner.
 
-Sources: [OpenAI Responses API](https://developers.openai.com/api/reference/cli/resources/responses/methods/create) and [OpenAI API authentication guidance](https://platform.openai.com/docs/api-reference/backward-compatibility)
+The Responses API supports text and image inputs, so both modes can share one backend integration while sending different input types.
+
+Sources: [OpenAI Responses API](https://developers.openai.com/api/reference/cli/resources/responses/methods/create), [OpenAI image-input quickstart](https://platform.openai.com/docs/quickstart/make-your-first-api-request), and [OpenAI API authentication guidance](https://platform.openai.com/docs/api-reference/backward-compatibility)
 
 #### Split and remove
 
@@ -204,7 +224,8 @@ Source: [Meta Instagram API documentation](https://www.postman.com/meta/instagra
 | `media_assets` | owner, source type, object key, thumbnail key, caption, duration, dimensions, size, status, `expires_at` |
 | `edit_projects` | owner, source asset, name, `edit_spec` JSONB, version, timestamps |
 | `ai_caption_threads` | owner, project, selected tone/language, created and updated times |
-| `ai_caption_messages` | thread, role, sanitized content, response ID, token usage, timestamp |
+| `ai_caption_messages` | thread, mode, role, sanitized content, response ID, token usage, timestamp |
+| `caption_analysis_jobs` | owner, project, selected timestamps, temporary frame keys, status, error, `expires_at` |
 | `render_jobs` | project, status, progress, error code, attempts, worker timestamps |
 | `exports` | owner, project, object key, thumbnail key, duration, dimensions, size, created time |
 
@@ -235,6 +256,8 @@ Clients receive short-lived signed URLs and never receive storage credentials.
 | `GET` | `/api/projects/:projectId/caption-chat` | Load the project's caption conversation |
 | `POST` | `/api/projects/:projectId/caption-chat/messages` | Send a prompt and stream structured caption suggestions |
 | `POST` | `/api/projects/:projectId/caption-chat/apply` | Apply a selected suggestion to the editable project caption |
+| `POST` | `/api/projects/:projectId/caption-analysis/frames` | Queue timeline-frame extraction and return a reviewable frame batch |
+| `POST` | `/api/projects/:projectId/caption-analysis/generate` | Send the user's approved frames and return structured caption suggestions |
 | `POST` | `/api/projects/:projectId/renders` | Queue an Instagram-ready export |
 | `GET` | `/api/exports` | List Edited Videos |
 | `DELETE` | `/api/exports/:exportId` | Delete an owned export |
@@ -251,7 +274,8 @@ Every asset/project lookup includes the authenticated owner ID; knowing another 
 - Isolate workers from the public API and restrict outbound hosts.
 - Use signed object URLs, encrypt secrets, and redact extractor logs.
 - Keep the OpenAI API key server-side and out of client bundles, logs, and repository files.
-- Send only the minimum caption context needed; do not send the complete source video unless a future feature explicitly requires and discloses it.
+- Send only the minimum caption context needed; video analysis sends reviewed screenshots, not the complete source video.
+- Require explicit user action before reviewed frames are sent to OpenAI, never sample disabled timeline segments, and purge temporary analysis frames after use or expiry.
 - Rate-limit AI requests and record per-user usage/cost metadata without logging secrets.
 - Automatically remove expired sources and failed partial uploads.
 - Make cleanup idempotent so database and storage retries are safe.
@@ -266,7 +290,7 @@ Every asset/project lookup includes the authenticated owner ID; knowing another 
 | `feature/instagram-downloader` | Link inspection, download jobs, caption extraction, and source normalization |
 | `feature/media-library` | Uploads, temporary storage, caption editing, and Media UI |
 | `feature/video-editor` | Crop, text, colors, gradient background, timeline split/delete, and edit JSON |
-| `feature/ai-caption-assistant` | In-editor OpenAI chat, structured caption suggestions, history, limits, and apply flow |
+| `feature/ai-caption-assistant` | Text chat/rewrite, reviewed timeline-frame analysis, structured suggestions, limits, and apply flow |
 | `feature/export-library` | Render queue, Instagram-compatible exports, and Edited Videos UI |
 | `infra/platform` | Database, Redis, object storage, authentication, deployment, and observability |
 
@@ -295,7 +319,8 @@ Feature branches start from `develop`. Small pull requests merge into `develop`;
 - Four-font and five-color text system.
 - Five direct background-color options, an HTML custom-color input, and hex gradients.
 - Split, remove, undo, redo, and autosave.
-- In-editor AI caption chat, structured suggestions, and manual apply/save flow.
+- AI caption mode 1: text chat, rewrite/paraphrase, multi-turn refinement, and manual apply/save flow.
+- AI caption mode 2: enabled-timeline frame sampling, user review, visual caption generation, and temporary-frame cleanup.
 
 ### Phase 4 — render and Edited Videos
 
@@ -319,6 +344,6 @@ Feature branches start from `develop`. Small pull requests merge into `develop`;
 - Exact five approved text colors.
 - Exact five predefined background colors; custom colors will use `<input type="color">`.
 - OpenAI API model, monthly budget, per-user quota, and chat-retention period.
-- Whether optional video transcripts should be generated automatically or only on request.
+- Whether a future audio/dialogue transcript should be offered as an explicit opt-in addition to screenshot analysis; it is not part of the first visual-only version.
 - Cloud provider for PostgreSQL, Redis, object storage, web app, and workers.
 - Free-plan duration/storage limits and whether paid plans are needed.
