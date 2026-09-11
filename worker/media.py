@@ -88,7 +88,8 @@ def import_media(job, root):
         rejection = download_limit(info)
         if rejection:
             raise ValueError(rejection)
-        meta = {'name': (info.get('title') or 'Imported video')[:200], 'caption': (info.get('description') or '')[:8000], 'creator': info.get('uploader') or ''}
+        title = re.sub(r'^Video by\s+', '', info.get('title') or 'Imported video', flags=re.IGNORECASE).strip()
+        meta = {'name': title[:200], 'caption': (info.get('description') or '')[:8000], 'creator': info.get('uploader') or ''}
         candidates = [p for p in root.glob(job['id'] + '-download.*') if p.suffix not in ['.part', '.ytdl']]
         if not candidates:
             raise ValueError('The platform did not return a downloadable public video within the size limit.')

@@ -21,6 +21,7 @@ import { api, fileUrl, clock, size } from "@/lib/api";
 import type { Media, Project, Export, Job } from "@/lib/types";
 import Editor from "@/components/Editor";
 import CaptionPreview from "@/components/CaptionPreview";
+import ProjectCard from "@/components/ProjectCard";
 import { useWebMCP } from "@/lib/useWebMCP";
 
 export default function Studio() {
@@ -105,6 +106,34 @@ export default function Studio() {
     });
   }
   const active = jobs.filter((j) => ["running", "queued"].includes(j.status));
+  async function deleteMedia(item: Media) {
+    const linked = projects.filter((p) => p.mediaId === item.id);
+    const message = linked.length
+      ? `Delete "${item.name}" and its ${linked.length} saved edit(s)? This cannot be undone. Exported videos will stay.`
+      : `Delete "${item.name}" from Media library? This cannot be undone. Exported videos will stay.`;
+    if (!confirm(message)) return;
+    await attempt(async () => {
+      await api(
+        `/media/${item.id}${linked.length ? `?deleteEdits=true&expectedEdits=${linked.length}` : ""}`,
+        { method: "DELETE" },
+      );
+      if (project?.mediaId === item.id) setProject(null);
+      await refresh();
+    });
+  }
+  async function deleteProject(item: Project) {
+    if (
+      !confirm(
+        `Delete edit "${item.name}"? Its saved changes and processed audio will be removed. The source video and exported videos will stay. This cannot be undone.`,
+      )
+    )
+      return;
+    await attempt(async () => {
+      await api(`/projects/${item.id}`, { method: "DELETE" });
+      if (project?.id === item.id) setProject(null);
+      await refresh();
+    });
+  }
   if (authed === false)
     return (
       <main className="login">
@@ -362,19 +391,8 @@ export default function Studio() {
                             )}
                             <button
                               aria-label={`Delete ${m.name}`}
-                              onClick={() => {
-                                if (
-                                  confirm(
-                                    "Delete this source video? Saved projects using it must be kept intact.",
-                                  )
-                                )
-                                  attempt(async () => {
-                                    await api(`/media/${m.id}`, {
-                                      method: "DELETE",
-                                    });
-                                    await refresh();
-                                  });
-                              }}
+                              disabled={busy || m.status === "processing"}
+                              onClick={() => deleteMedia(m)}
                             >
                               <Trash2 size={16} />
                             </button>
@@ -402,21 +420,20 @@ export default function Studio() {
                 </button>
               )}
               {view === "editor" &&
-                projects.map((p) => (
-                  <article className="project-card" key={p.id}>
-                    <div className="project-mark">
-                      <Scissors size={25} />
-                    </div>
-                    <h3>{p.name}</h3>
-                    <p>{new Date(p.updatedAt).toLocaleDateString()}</p>
-                    <button
-                      className="subtle"
-                      onClick={() => openProject(p.id)}
-                    >
-                      Continue editing <ArrowUpRight size={16} />
-                    </button>
-                  </article>
-                ))}
+                projects
+                  .filter((p) =>
+                    p.name.toLowerCase().includes(query.toLowerCase()),
+                  )
+                  .map((p) => (
+                    <ProjectCard
+                      key={p.id}
+                      project={p}
+                      media={media.find((m) => m.id === p.mediaId)}
+                      busy={busy}
+                      onOpen={() => openProject(p.id)}
+                      onDelete={() => deleteProject(p)}
+                    />
+                  ))}
               {view === "exports" &&
                 exports
                   .filter((x) =>

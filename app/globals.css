@@ -683,6 +683,10 @@ header {
   -webkit-box-orient: vertical;
   margin-top: 8px;
 }
+.project-actions {
+  gap: 12px;
+  flex-wrap: wrap;
+}
 .job-errors {
   margin-top: 25px;
   font-size: 13px;

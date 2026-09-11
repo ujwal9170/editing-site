@@ -24,6 +24,7 @@
 - Undo/redo currently applies to edit-spec changes, not name/caption typing.
 - The canvas is fixed to 9:16 (1080×1920). Fill Reel frame crops centrally; Fit full video restores the whole source inside that canvas.
 - The existing expiry cleaner removes expired sources. Full project/derivative lifecycle cleanup and storage quotas are still required before long-term hosting.
+- Explicit source/project deletion now removes linked project and audio records atomically, then cleans their files; exports are independent. If Windows holds a file open, record deletion succeeds and the failed file cleanup is logged. Retrying orphan-file cleanup remains a hosting follow-up.
 - Imported sources are normalized for editing rather than retained as a separate original-quality archive.
 - No live Instagram posting integration, scheduled publishing, AI caption calls, or cloud deployment has been implemented.
 

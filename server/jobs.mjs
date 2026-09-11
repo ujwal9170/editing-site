@@ -74,7 +74,13 @@ export function createQueue(repo, root) {
   }
   return {
     add(type, payload, done, failed) {
-      const job = repo.put("job", { type, status: "queued", progress: 0 });
+      const job = repo.put("job", {
+        type,
+        status: "queued",
+        progress: 0,
+        projectId: payload.projectId,
+        mediaId: payload.mediaId,
+      });
       pending.push({ job, payload, done, failed });
       void drain();
       return job;

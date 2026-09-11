@@ -41,6 +41,8 @@ Optional settings are documented in `.env.example`. Copy it to `.env` when overr
 - Imports retain the 15-minute/300 MB limits. Private, login-gated, age/region-restricted videos and platform rate limits can prevent downloads; no access-control bypass is used. TikTok must be reachable from the backend's network. The installed `yt-dlp[default]` package includes YouTube's EJS support, and the worker uses this app's Node executable for JavaScript processing.
 - Device uploads up to 300 MB and 15 minutes, local thumbnails, searchable Media library, caption editing, downloads, and 7-day source retention.
 - Saved projects with serialized autosave, revision-conflict detection, editable captions, and undo/redo for video edits.
+- Editor library cards show source thumbnails and allow deleting a saved edit without deleting its source or exported videos. Deleting Media with linked edits requires explicit confirmation of the current edit count; it removes those drafts and processed stems, while exports stay available. Active render/audio jobs block deletion until they finish.
+- Generated leading `Video by` text is removed from imported names and existing Media, project and export names; captions and custom non-prefixed titles are preserved.
 - Fixed 9:16 Reel canvas (1080×1920), fill-frame crop, adjustable crop and fit-full-video.
 - Text overlays with four bundled fonts, five text colors, positions, sizes and source-timeline timing.
 - Five background swatches, custom HTML color input, and two/three-color gradients.

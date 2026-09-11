@@ -15,6 +15,7 @@ import { z } from "zod";
 import { createRepository } from "./repository.mjs";
 import { createQueue } from "./jobs.mjs";
 import { videoLink, initialEdit, validateEdit } from "../shared/validation.mjs";
+import { cleanVideoName } from "../shared/names.mjs";
 
 export async function createApp({
   dataDir = process.env.DATA_DIR || "runtime",
@@ -25,6 +26,30 @@ export async function createApp({
   await mkdir(root, { recursive: true });
   const repo = createRepository(root),
     queue = queueFactory(repo, root);
+  for (const kind of ["media", "project", "export"]) {
+    for (const item of repo.list(kind)) {
+      const name = cleanVideoName(item.name);
+      if (name && name !== item.name)
+        repo.put(kind, {
+          ...item,
+          name,
+          ...(kind === "project" ? { revision: item.revision + 1 } : {}),
+        });
+    }
+  }
+  // Protect the async upload/artwork preparation window before a job is queued.
+  const preparingProjects = new Map();
+  const projectOperation = (handler) => async (req, reply) => {
+    const id = req.params.id;
+    preparingProjects.set(id, (preparingProjects.get(id) || 0) + 1);
+    try {
+      return await handler(req, reply);
+    } finally {
+      const count = preparingProjects.get(id) - 1;
+      if (count) preparingProjects.set(id, count);
+      else preparingProjects.delete(id);
+    }
+  };
   // One-time migration for development projects saved before Reel-only canvases.
   for (const project of repo.list("project")) {
     if (project.edit?.canvas?.aspectRatio !== "9:16") {
@@ -203,14 +228,82 @@ export async function createApp({
   });
   app.delete("/api/media/:id", async (req) => {
     const item = get("media", req.params.id);
-    if (
-      item.status === "processing" ||
-      repo.list("project").some((p) => p.mediaId === item.id)
-    )
-      throw new Error("This source is processing or used by a saved project.");
-    for (const key of ["file", "audioFile", "thumbnail"])
-      if (item[key]) await rm(path.join(root, item[key]), { force: true });
-    repo.remove("media", item.id);
+    const linked = repo.list("project").filter((p) => p.mediaId === item.id);
+    if (item.status === "processing" || linked.some((p) => projectBusy(p.id)))
+      throw Object.assign(
+        new Error(
+          "This video has processing in progress. Wait for it to finish before deleting.",
+        ),
+        { statusCode: 409 },
+      );
+    if (linked.length && req.query.deleteEdits !== "true")
+      throw Object.assign(
+        new Error(
+          `This video has ${linked.length} saved edit(s). Confirm deletion of the video and linked edits, or delete those edits in Editor first. Exported videos will stay.`,
+        ),
+        { statusCode: 409 },
+      );
+    if (linked.length && Number(req.query.expectedEdits) !== linked.length)
+      throw Object.assign(
+        new Error(
+          "The linked edits changed. Refresh the library and confirm deletion again.",
+        ),
+        { statusCode: 409 },
+      );
+    const records = [{ kind: "media", ...item }, ...editRecords(linked)];
+    await removeRecords(records);
+    return { ok: true, deletedEdits: linked.length };
+  });
+  function projectBusy(id) {
+    return (
+      preparingProjects.has(id) ||
+      repo
+        .list("job")
+        .some(
+          (j) =>
+            ["queued", "running"].includes(j.status) &&
+            (j.projectId === id ||
+              (!j.projectId && ["render", "audio"].includes(j.type))),
+        )
+    );
+  }
+  function editRecords(projects) {
+    const ids = new Set(projects.map((p) => p.id));
+    return [
+      ...projects.map((p) => ({ kind: "project", ...p })),
+      ...repo
+        .list("audio")
+        .filter((a) => ids.has(a.projectId))
+        .map((a) => ({ kind: "audio", ...a })),
+    ];
+  }
+  async function removeRecords(records) {
+    // Remove references atomically before yielding; a stale autosave cannot recreate them.
+    repo.removeMany(records);
+    for (const item of records)
+      for (const key of ["file", "audioFile", "thumbnail"]) {
+        if (item[key])
+          await rm(path.join(root, item[key]), { force: true }).catch(
+            (error) => {
+              // The record is deleted even if Windows temporarily holds a file open.
+              app.log.warn(
+                { error, file: item[key] },
+                "Deferred orphan-file cleanup required",
+              );
+            },
+          );
+      }
+  }
+  app.delete("/api/projects/:id", async (req) => {
+    const project = get("project", req.params.id);
+    if (projectBusy(project.id))
+      throw Object.assign(
+        new Error(
+          "This edit is processing. Wait for it to finish before deleting.",
+        ),
+        { statusCode: 409 },
+      );
+    await removeRecords(editRecords([project]));
     return { ok: true };
   });
   app.post("/api/projects", (req) => {
@@ -260,100 +353,110 @@ export async function createApp({
       revision: item.revision + 1,
     });
   });
-  app.post("/api/projects/:id/audio", async (req, reply) => {
-    const project = get("project", req.params.id),
-      media = mediaReady(project.mediaId);
-    const file = await upload(req, ".audio-upload");
-    const audio = repo.put("audio", {
-      projectId: project.id,
-      status: "processing",
-    });
-    const job = queue.add(
-      "audio",
-      {
-        action: "audio",
-        root,
-        input: file.name,
-        id: audio.id,
-        duration: media.duration,
-      },
-      (result) => {
-        repo.put("audio", { ...audio, ...result, status: "ready" });
-        return audio.id;
-      },
-      () => rm(path.join(root, file.name), { force: true }),
-    );
-    return reply.code(202).send({ job });
-  });
-  app.post("/api/projects/:id/renders", async (req, reply) => {
-    const project = get("project", req.params.id),
-      media = mediaReady(project.mediaId);
-    const spec = validateEdit(project.edit, media.duration * 1000);
-    const enabledDuration = spec.segments
-      .filter((s) => s.enabled)
-      .reduce((t, s) => t + s.endMs - s.startMs, 0);
-    if (enabledDuration < 3000)
-      throw new Error("Keep at least 3 seconds for the Instagram export.");
-    const data = z
-      .object({
-        revision: z.number().int(),
-        background: z.string().max(8_000_000),
-        overlays: z.array(z.string().max(8_000_000)).max(12),
-      })
-      .parse(req.body);
-    if (data.revision !== project.revision)
-      throw new Error("Save the latest edit before rendering.");
-    if (data.overlays.length !== spec.textOverlays.length)
-      throw new Error("Overlay count does not match project.");
-    const id = randomUUID();
-    const files = [];
-    for (const [i, png] of [data.background, ...data.overlays].entries()) {
-      if (!png.startsWith("data:image/png;base64,"))
-        throw new Error("Expected PNG artwork.");
-      const file = `${id}-art-${i}.png`;
-      await writeFile(
-        path.join(root, file),
-        Buffer.from(png.split(",")[1], "base64"),
-      );
-      files.push(file);
-    }
-    let audioFile = null;
-    if (["remove-vocals", "vocals-only"].includes(spec.audio.mode)) {
-      const audio = get("audio", spec.audio.derivativeId);
-      if (audio.projectId !== project.id || audio.status !== "ready")
-        throw new Error("Apply processed audio first.");
-      audioFile = audio.file;
-    }
-    const clean = async () => {
-      for (const f of files) await rm(path.join(root, f), { force: true });
-    };
-    const job = queue.add(
-      "render",
-      {
-        action: "render",
-        root,
-        id,
-        input: media.file,
-        spec,
-        audioFile,
-        art: files,
-      },
-      async (result) => {
-        repo.put("export", {
-          id,
+  app.post(
+    "/api/projects/:id/audio",
+    projectOperation(async (req, reply) => {
+      const project = get("project", req.params.id),
+        media = mediaReady(project.mediaId);
+      const file = await upload(req, ".audio-upload");
+      const audio = repo.put("audio", {
+        projectId: project.id,
+        status: "processing",
+      });
+      const job = queue.add(
+        "audio",
+        {
+          action: "audio",
           projectId: project.id,
-          name: project.name,
-          caption: project.caption,
-          edit: spec,
-          ...result,
-        });
-        await clean();
-        return id;
-      },
-      clean,
-    );
-    return reply.code(202).send({ job });
-  });
+          mediaId: media.id,
+          root,
+          input: file.name,
+          id: audio.id,
+          duration: media.duration,
+        },
+        (result) => {
+          repo.put("audio", { ...audio, ...result, status: "ready" });
+          return audio.id;
+        },
+        () => rm(path.join(root, file.name), { force: true }),
+      );
+      return reply.code(202).send({ job });
+    }),
+  );
+  app.post(
+    "/api/projects/:id/renders",
+    projectOperation(async (req, reply) => {
+      const project = get("project", req.params.id),
+        media = mediaReady(project.mediaId);
+      const spec = validateEdit(project.edit, media.duration * 1000);
+      const enabledDuration = spec.segments
+        .filter((s) => s.enabled)
+        .reduce((t, s) => t + s.endMs - s.startMs, 0);
+      if (enabledDuration < 3000)
+        throw new Error("Keep at least 3 seconds for the Instagram export.");
+      const data = z
+        .object({
+          revision: z.number().int(),
+          background: z.string().max(8_000_000),
+          overlays: z.array(z.string().max(8_000_000)).max(12),
+        })
+        .parse(req.body);
+      if (data.revision !== project.revision)
+        throw new Error("Save the latest edit before rendering.");
+      if (data.overlays.length !== spec.textOverlays.length)
+        throw new Error("Overlay count does not match project.");
+      const id = randomUUID();
+      const files = [];
+      for (const [i, png] of [data.background, ...data.overlays].entries()) {
+        if (!png.startsWith("data:image/png;base64,"))
+          throw new Error("Expected PNG artwork.");
+        const file = `${id}-art-${i}.png`;
+        await writeFile(
+          path.join(root, file),
+          Buffer.from(png.split(",")[1], "base64"),
+        );
+        files.push(file);
+      }
+      let audioFile = null;
+      if (["remove-vocals", "vocals-only"].includes(spec.audio.mode)) {
+        const audio = get("audio", spec.audio.derivativeId);
+        if (audio.projectId !== project.id || audio.status !== "ready")
+          throw new Error("Apply processed audio first.");
+        audioFile = audio.file;
+      }
+      const clean = async () => {
+        for (const f of files) await rm(path.join(root, f), { force: true });
+      };
+      const job = queue.add(
+        "render",
+        {
+          action: "render",
+          projectId: project.id,
+          mediaId: media.id,
+          root,
+          id,
+          input: media.file,
+          spec,
+          audioFile,
+          art: files,
+        },
+        async (result) => {
+          repo.put("export", {
+            id,
+            projectId: project.id,
+            name: project.name,
+            caption: project.caption,
+            edit: spec,
+            ...result,
+          });
+          await clean();
+          return id;
+        },
+        clean,
+      );
+      return reply.code(202).send({ job });
+    }),
+  );
   app.delete("/api/exports/:id", async (req) => {
     const item = get("export", req.params.id);
     for (const key of ["file", "thumbnail"])

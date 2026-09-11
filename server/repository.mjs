@@ -38,6 +38,19 @@ export function createRepository(root) {
     remove(kind, id) {
       db.prepare("DELETE FROM records WHERE kind=? AND id=?").run(kind, id);
     },
+    removeMany(items) {
+      db.exec("BEGIN IMMEDIATE");
+      try {
+        const statement = db.prepare(
+          "DELETE FROM records WHERE kind=? AND id=?",
+        );
+        for (const { kind, id } of items) statement.run(kind, id);
+        db.exec("COMMIT");
+      } catch (error) {
+        db.exec("ROLLBACK");
+        throw error;
+      }
+    },
     close() {
       db.close();
     },
