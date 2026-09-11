@@ -17,12 +17,27 @@
       cos[i] = Math.cos((2 * Math.PI * i) / n);
       sin[i] = Math.sin((2 * Math.PI * i) / n);
     }
+    // Precompute cos[(j*k)%n]/sin[(j*k)%n] for every (j,k) once here, instead
+    // of recomputing that modulo+lookup on every transform() call — the
+    // values are identical (same formula), just computed ahead of time. This
+    // table is built once per process; transform() runs thousands of times
+    // per clip, so the win compounds.
+    const cosT = new Float64Array(radix * n),
+      sinT = new Float64Array(radix * n);
+    for (let j = 0; j < radix; j++)
+      for (let k = 0; k < n; k++) {
+        const tw = (j * k) % n;
+        cosT[j * n + k] = cos[tw];
+        sinT[j * n + k] = sin[tw];
+      }
     return {
       n,
       radix,
       m,
       cos,
       sin,
+      cosT,
+      sinT,
       real: new Float64Array(n),
       imag: new Float64Array(n),
       child: plan(m),
@@ -57,19 +72,23 @@
         j * p.m,
         inverse,
       );
-    for (let k = 0; k < p.n; k++) {
+    const { n, m, radix, real: pr, imag: pim, cosT, sinT } = p,
+      sign = inverse ? 1 : -1;
+    let km = 0;
+    for (let k = 0; k < n; k++) {
       let r = 0,
         im = 0;
-      for (let j = 0; j < p.radix; j++) {
-        const at = j * p.m + (k % p.m),
-          tw = (j * k) % p.n,
-          s = p.sin[tw] * (inverse ? 1 : -1),
-          c = p.cos[tw];
-        r += p.real[at] * c - p.imag[at] * s;
-        im += p.real[at] * s + p.imag[at] * c;
+      for (let j = 0; j < radix; j++) {
+        const at = j * m + km,
+          idx = j * n + k,
+          c = cosT[idx],
+          s = sinT[idx] * sign;
+        r += pr[at] * c - pim[at] * s;
+        im += pr[at] * s + pim[at] * c;
       }
       outR[outOffset + k] = r;
       outI[outOffset + k] = im;
+      if (++km === m) km = 0;
     }
   }
   const window = Float64Array.from(
