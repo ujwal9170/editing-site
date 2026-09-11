@@ -13,7 +13,7 @@ The first complete user journey will be:
 3. Save the video and caption temporarily in **Media**.
 4. Upload other local videos to the same Media section when needed.
 5. Open a video in a non-destructive editor.
-6. Crop, add text, choose a font/color, create a mixed-color background, split the timeline, and remove unwanted sections.
+6. Crop, add text, choose a font/color, create a mixed-color background, split the timeline, remove unwanted sections, and optionally remove or isolate vocals.
 7. Use either text chat or approved timeline screenshots to draft, rewrite, or improve the post caption.
 8. Review and manually apply the chosen caption to the project.
 9. Render an Instagram-compatible MP4.
@@ -33,6 +33,8 @@ flowchart LR
     F --> G[Instagram extractor]
     F --> H[FFmpeg editor and renderer]
     B --> I[OpenAI Responses API]
+    A --> J[ONNX Runtime Web]
+    J --> K[Kim Vocal 2 model]
     G --> D
     H --> D
     F --> C
@@ -52,6 +54,7 @@ flowchart LR
 | Database | PostgreSQL | Metadata, captions, projects, edit instructions, and job state |
 | File storage | S3-compatible storage such as Cloudflare R2 | Source videos, uploads, thumbnails, and exports |
 | Caption assistant | OpenAI Responses API | Text-based caption chat and caption generation from approved timeline frames |
+| Vocal separation | Kim Vocal 2 ONNX + ONNX Runtime Web 1.21.0 | Client-side vocal isolation/removal through WebGPU with multithreaded WASM fallback |
 
 The web request will never stay open for a full video download or render. The API creates a background job and the browser reads its progress using a job ID.
 
@@ -157,6 +160,36 @@ Sources: [OpenAI Responses API](https://developers.openai.com/api/reference/cli/
 - Export renders only enabled segments and concatenates them in order.
 - Undo/redo uses edit-spec history in the browser.
 
+#### Client-side vocal removal
+
+The editor's **Audio** panel will offer **Original**, **Remove vocals**, **Keep vocals only**, and **Mute**. Vocal processing is non-destructive: the source video remains unchanged and the project stores the selected audio mode plus a generated derivative when required.
+
+- Use the MIT-licensed [Kim Vocal 2 ONNX model](https://huggingface.co/Blane187/all_public_uvr_models/blob/main/Kim_Vocal_2.onnx), an MDX-Net vocal-isolation model. The current model artifact is approximately 66.8 MB.
+- Pin the initially tested runtime to `onnxruntime-web@1.21.0`; update it only after audio-quality and performance regression tests.
+- Run inference in the user's browser. Deployment does not use the hosting server's CPU/GPU: WebGPU uses the user's GPU and WASM uses the user's CPU.
+- Prefer WebGPU when available by loading the WebGPU build and creating the session with `executionProviders: ["webgpu", "wasm"]`; otherwise use WASM.
+- Configure the WASM fallback for up to four threads. Multithreading requires WebAssembly thread support and `crossOriginIsolated === true`.
+- Serve production over HTTPS and set `Cross-Origin-Opener-Policy: same-origin` plus `Cross-Origin-Embedder-Policy: require-corp`. Verify all CDN or third-party assets remain compatible with these headers.
+- Run resampling, STFT, ISTFT, denoising, and overlap-add inside a dedicated Web Worker so the editor UI stays responsive. ONNX Runtime threading does not automatically parallelize custom JavaScript DSP.
+- Show the detected engine (`WebGPU` or `WASM · N threads`), model-download progress, separation progress, elapsed time, a cancel action, and a **Result may vary** notice.
+- Generate a short preview before the user applies the result. After approval, upload only the selected derived audio stem through a signed URL so the render worker can use it in the final export.
+- Cache the pinned model in IndexedDB after its first verified download. For production reliability, mirror the versioned model and matching ONNX Runtime/WASM assets under an application-controlled origin instead of depending on unversioned CDN URLs.
+- Preserve the Kim Vocal 2 model's MIT license notice and attribution in the deployed application.
+
+The validated audio pipeline must remain parameter-compatible with the model contract:
+
+- resample stereo audio to `44100 Hz`;
+- use `n_fft=7680`, `hop_length=1024`, `dim_f=3072`, and `dim_t=256`;
+- split audio into `261120`-sample chunks (about 5.9 seconds) with 25% overlap;
+- transform each chunk into a `[1, 4, 3072, 256]` tensor ordered as left-real, left-imaginary, right-real, and right-imaginary;
+- run positive and negated spectrogram passes, then combine them as `negative * -0.5 + positive * 0.5`;
+- reconstruct with ISTFT and weighted overlap-add, then join chunks with a Hann-window crossfade;
+- process chunks sequentially by default to bound browser memory, while reporting progress between chunks.
+
+Because the denoise mode performs two inference passes per chunk, it improves separation quality at roughly double the model-inference work. WebGPU should remain the preferred path for this mode. Weak devices can fall back to WASM, but the UI must warn that longer videos may take substantially more time.
+
+Sources: [ONNX Runtime WebGPU guide](https://onnxruntime.ai/docs/tutorials/web/ep-webgpu.html), [ONNX Runtime Web environment and session options](https://onnxruntime.ai/docs/tutorials/web/env-flags-and-session-options.html), and [ONNX Runtime Web deployment guide](https://onnxruntime.ai/docs/tutorials/web/deploy.html)
+
 Example edit specification:
 
 ```json
@@ -176,6 +209,10 @@ Example edit specification:
     { "startMs": 8200, "endMs": 11600, "enabled": false },
     { "startMs": 11600, "endMs": 24000, "enabled": true }
   ],
+  "audio": {
+    "mode": "remove-vocals",
+    "derivativeId": "audio-derivative-id"
+  },
   "textOverlays": [
     {
       "text": "Sample text",
@@ -223,6 +260,7 @@ Source: [Meta Instagram API documentation](https://www.postman.com/meta/instagra
 | `users` | `id`, identity-provider ID, timestamps |
 | `media_assets` | owner, source type, object key, thumbnail key, caption, duration, dimensions, size, status, `expires_at` |
 | `edit_projects` | owner, source asset, name, `edit_spec` JSONB, version, timestamps |
+| `audio_derivatives` | owner, project, mode, object key, sample rate, duration, size, status, `expires_at` |
 | `ai_caption_threads` | owner, project, selected tone/language, created and updated times |
 | `ai_caption_messages` | thread, mode, role, sanitized content, response ID, token usage, timestamp |
 | `caption_analysis_jobs` | owner, project, selected timestamps, temporary frame keys, status, error, `expires_at` |
@@ -253,6 +291,7 @@ Clients receive short-lived signed URLs and never receive storage credentials.
 | `DELETE` | `/api/media/:assetId` | Delete an owned source asset |
 | `POST` | `/api/projects` | Create an edit project from a Media asset |
 | `PATCH` | `/api/projects/:projectId` | Save the validated edit specification |
+| `POST` | `/api/projects/:projectId/audio-derivatives/uploads` | Create a signed upload for a user-approved client-side audio stem |
 | `GET` | `/api/projects/:projectId/caption-chat` | Load the project's caption conversation |
 | `POST` | `/api/projects/:projectId/caption-chat/messages` | Send a prompt and stream structured caption suggestions |
 | `POST` | `/api/projects/:projectId/caption-chat/apply` | Apply a selected suggestion to the editable project caption |
@@ -276,6 +315,8 @@ Every asset/project lookup includes the authenticated owner ID; knowing another 
 - Keep the OpenAI API key server-side and out of client bundles, logs, and repository files.
 - Send only the minimum caption context needed; video analysis sends reviewed screenshots, not the complete source video.
 - Require explicit user action before reviewed frames are sent to OpenAI, never sample disabled timeline segments, and purge temporary analysis frames after use or expiry.
+- Keep vocal separation client-side; upload a derived stem only after user approval, validate its type/size/duration, and restrict its signed URL to the owning project.
+- Enable COOP/COEP headers for WASM multithreading and test that every required cross-origin asset is served with compatible CORS/CORP headers.
 - Rate-limit AI requests and record per-user usage/cost metadata without logging secrets.
 - Automatically remove expired sources and failed partial uploads.
 - Make cleanup idempotent so database and storage retries are safe.
@@ -289,7 +330,7 @@ Every asset/project lookup includes the authenticated owner ID; knowing another 
 | `develop` | Integration branch for completed feature work |
 | `feature/instagram-downloader` | Link inspection, download jobs, caption extraction, and source normalization |
 | `feature/media-library` | Uploads, temporary storage, caption editing, and Media UI |
-| `feature/video-editor` | Crop, text, colors, gradient background, timeline split/delete, and edit JSON |
+| `feature/video-editor` | Crop, text, colors, backgrounds, timeline tools, Kim Vocal 2 separation, and edit JSON |
 | `feature/ai-caption-assistant` | Text chat/rewrite, reviewed timeline-frame analysis, structured suggestions, limits, and apply flow |
 | `feature/export-library` | Render queue, Instagram-compatible exports, and Edited Videos UI |
 | `infra/platform` | Database, Redis, object storage, authentication, deployment, and observability |
@@ -319,6 +360,7 @@ Feature branches start from `develop`. Small pull requests merge into `develop`;
 - Four-font and five-color text system.
 - Five direct background-color options, an HTML custom-color input, and hex gradients.
 - Split, remove, undo, redo, and autosave.
+- Kim Vocal 2 client-side vocal separation, WebGPU/WASM selection, worker-based DSP, preview/apply, and derivative upload.
 - AI caption mode 1: text chat, rewrite/paraphrase, multi-turn refinement, and manual apply/save flow.
 - AI caption mode 2: enabled-timeline frame sampling, user review, visual caption generation, and temporary-frame cleanup.
 
@@ -343,6 +385,8 @@ Feature branches start from `develop`. Small pull requests merge into `develop`;
 - Names/files for the four bundled fonts.
 - Exact five approved text colors.
 - Exact five predefined background colors; custom colors will use `<input type="color">`.
+- Maximum audio/video duration for client-side vocal separation and the minimum supported device-memory profile.
+- Whether the production deployment will self-host the pinned Kim Vocal 2 and ONNX Runtime assets or use a controlled CDN with compatible cross-origin headers.
 - OpenAI API model, monthly budget, per-user quota, and chat-retention period.
 - Whether a future audio/dialogue transcript should be offered as an explicit opt-in addition to screenshot analysis; it is not part of the first visual-only version.
 - Cloud provider for PostgreSQL, Redis, object storage, web app, and workers.
