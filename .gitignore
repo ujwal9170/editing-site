@@ -1,0 +1,11 @@
+node_modules/
+.next/
+.env
+.venv/
+runtime/
+public/vendor/
+public/models/*.onnx
+*.tsbuildinfo
+__pycache__/
+.sites-runtime/
+work-test/

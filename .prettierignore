@@ -1,0 +1,8 @@
+node_modules
+.next
+runtime
+public/vendor
+public/models/*.onnx
+.venv
+work-test
+pnpm-lock.yaml

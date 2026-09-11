@@ -1,0 +1,32 @@
+# Extension guide
+
+## Add an editor tool
+
+1. Extend `Edit` in `lib/types.ts` and its runtime validation in `shared/validation.mjs` together. Preserve existing saved projects or introduce an explicit version migration.
+2. Add the controls to the relevant editor panel. Changes go through the editor's `change()` action so undo/redo and autosave continue to work.
+3. Update `lib/canvas.ts` for preview and `worker/media.py` for export. Prefer shared canvas artwork for effects that must visually match.
+4. Add a regression with an observable output (duration, dimensions, color, timing, reconstruction), not merely a duplicate of the implementation.
+
+## Replace infrastructure independently
+
+- Implement the repository's `get/list/put/remove` contract with PostgreSQL. Add transactional revisions and ownership enforcement before offering private user accounts.
+- Replace `createQueue` with Redis/BullMQ while keeping the JSON worker request/result protocol. Current interrupted jobs are marked failed after restart; they are not silently resumed.
+- Introduce a storage adapter for upload/stream/delete and worker staging. Use S3/R2 signed URLs once the private storage service is configured.
+- Keep credentials server-side. The caption assistant is explicitly deferred and should later expose separate configurable text and vision models.
+
+## Known development limits
+
+- One shared workspace, one serial media worker. Password sessions are in memory and expire after restart.
+- Browser inference is device-dependent and does not use the hosting machine's GPU. A WebGPU provider preference does not prove every model operator ran on GPU.
+- Audio separation does two inference passes; test on real vocal/music mixtures and multiple devices before calling its quality production-ready.
+- The pinned model parameters came from the user's existing tested prototype. Windowing, compensation and edge handling should be compared against that implementation with identical audio fixtures.
+- Canvas rasterized text matches the selected bundled fonts; caption text is separate from burned-in text.
+- Undo/redo currently applies to edit-spec changes, not name/caption typing.
+- The canvas is fixed to 9:16 (1080×1920). Fill Reel frame crops centrally; Fit full video restores the whole source inside that canvas.
+- The existing expiry cleaner removes expired sources. Full project/derivative lifecycle cleanup and storage quotas are still required before long-term hosting.
+- Imported sources are normalized for editing rather than retained as a separate original-quality archive.
+- No live Instagram posting integration, scheduled publishing, AI caption calls, or cloud deployment has been implemented.
+
+## Release checks
+
+Run tests, typecheck, build, and the local smoke workflow. Verify browser preview, crop/text/background, split/restore, save/reopen, and a short audio separation. Check the exported MP4's duration and codecs. Do not commit test media, runtime state, model weights or credentials.

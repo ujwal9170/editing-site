@@ -1,0 +1,149 @@
+"""Media worker protocol: one JSON request file in, one JSON result on stdout.
+
+Files are named by the API. FFmpeg receives argument arrays, never a shell command.
+"""
+import json
+import math
+import re
+import subprocess
+import sys
+from pathlib import Path
+
+import imageio_ffmpeg
+from PIL import Image
+
+FFMPEG = imageio_ffmpeg.get_ffmpeg_exe()
+
+
+def run(args, timeout=1500):
+    proc = subprocess.run([FFMPEG, '-hide_banner', '-loglevel', 'error', '-y', *args], capture_output=True, text=True, encoding='utf-8', errors='replace', timeout=timeout)
+    if proc.returncode:
+        raise ValueError('Media processing failed: ' + proc.stderr[-1200:])
+
+
+def probe(file):
+    p = subprocess.run([FFMPEG, '-hide_banner', '-i', str(file)], capture_output=True, text=True, encoding='utf-8', errors='replace', timeout=30)
+    text = p.stderr
+    duration = re.search(r'Duration: (\d+):(\d+):([\d.]+)', text)
+    video = next((line for line in text.splitlines() if 'Video:' in line), '')
+    size = re.search(r'\b(\d{2,5})x(\d{2,5})\b', video)
+    if not duration:
+        raise ValueError('Could not read media duration.')
+    seconds = int(duration[1]) * 3600 + int(duration[2]) * 60 + float(duration[3])
+    if not math.isfinite(seconds) or seconds <= 0 or seconds > 900:
+        raise ValueError('Videos must be between 0 and 15 minutes.')
+    return {'duration': seconds, 'width': int(size[1]) if size else 0, 'height': int(size[2]) if size else 0, 'hasAudio': 'Audio:' in text}
+
+
+def thumbnail(file, target):
+    run(['-i', str(file), '-frames:v', '1', '-vf', 'scale=360:-2', str(target)], 60)
+
+
+def normalize(source, target):
+    info = probe(source)
+    if not info['width']:
+        raise ValueError('This file does not contain a video stream.')
+    args = ['-i', str(source)]
+    if not info['hasAudio']:
+        args += ['-f', 'lavfi', '-i', 'anullsrc=r=48000:cl=stereo']
+    args += ['-map', '0:v:0', '-map', '0:a:0' if info['hasAudio'] else '1:a:0', '-t', str(info['duration']), '-vf', 'scale=trunc(iw/2)*2:trunc(ih/2)*2', '-c:v', 'libx264', '-crf', '18', '-preset', 'fast', '-pix_fmt', 'yuv420p', '-c:a', 'aac', '-b:a', '128k', '-ar', '48000', '-ac', '2', '-movflags', '+faststart', str(target)]
+    run(args)
+    return probe(target)
+
+
+def import_media(job, root):
+    meta = {}
+    if job['action'] == 'download':
+        import yt_dlp
+        options = {'quiet': True, 'no_warnings': True, 'noplaylist': True, 'playlist_items': '1', 'socket_timeout': 25, 'retries': 2, 'format': 'bestvideo*+bestaudio/best', 'merge_output_format': 'mp4', 'ffmpeg_location': FFMPEG, 'max_filesize': 300 * 1024 * 1024, 'outtmpl': str(root / (job['id'] + '-download.%(ext)s'))}
+        def limit(info, *, incomplete=False):
+            if (info.get('duration') or 0) > 900:
+                return 'Video exceeds 15 minutes.'
+        options['match_filter'] = limit
+        with yt_dlp.YoutubeDL(options) as ydl:
+            info = ydl.extract_info(job['url'], download=True)
+        if info.get('entries'):
+            info = next(x for x in info['entries'] if x)
+        meta = {'name': (info.get('title') or 'Instagram video')[:200], 'caption': (info.get('description') or '')[:8000], 'creator': info.get('uploader') or ''}
+        candidates = [p for p in root.glob(job['id'] + '-download.*') if p.suffix not in ['.part', '.ytdl']]
+        if not candidates:
+            raise ValueError('Instagram did not return a downloadable public video.')
+        source = max(candidates, key=lambda p: p.stat().st_size)
+    else:
+        source = root / job['input']
+    target = root / (job['id'] + '.mp4')
+    info = normalize(source, target)
+    audio = root / (job['id'] + '.wav')
+    run(['-i', str(target), '-vn', '-ar', '44100', '-ac', '2', '-c:a', 'pcm_s16le', str(audio)])
+    thumb = root / (job['id'] + '.jpg')
+    thumbnail(target, thumb)
+    source.unlink(missing_ok=True)
+    return {**meta, **info, 'file': target.name, 'audioFile': audio.name, 'thumbnail': thumb.name, 'size': target.stat().st_size}
+
+
+def audio(job, root):
+    source = root / job['input']
+    info = probe(source)
+    if abs(info['duration'] - job['duration']) > 0.5:
+        raise ValueError('Processed audio must match the full source duration.')
+    target = root / (job['id'] + '.wav')
+    run(['-i', str(source), '-vn', '-ar', '44100', '-ac', '2', '-c:a', 'pcm_s16le', str(target)])
+    source.unlink(missing_ok=True)
+    return {'file': target.name, 'duration': info['duration'], 'size': target.stat().st_size}
+
+
+def render(job, root):
+    spec = job['spec']
+    if spec['canvas']['aspectRatio'] != '9:16':
+        raise ValueError('Only the 9:16 Reel format is supported.')
+    width, height = 1080, 1920
+    source = root / job['input']
+    info = probe(source)
+    args = ['-i', str(source)]
+    for artwork in job['art']:
+        file = root / artwork
+        with Image.open(file) as image:
+            if image.format != 'PNG' or image.size != (width, height):
+                raise ValueError('Artwork dimensions do not match the project canvas.')
+        args += ['-loop', '1', '-i', str(file)]
+    audio_input = '0:a'
+    if job['audioFile']:
+        args += ['-i', str(root / job['audioFile'])]
+        audio_input = str(len(job['art']) + 1) + ':a'
+    c = spec['crop']
+    cw = max(2, int(info['width'] * c['width']) // 2 * 2)
+    ch = max(2, int(info['height'] * c['height']) // 2 * 2)
+    cx = min(info['width'] - cw, int(info['width'] * c['x']) // 2 * 2)
+    cy = min(info['height'] - ch, int(info['height'] * c['y']) // 2 * 2)
+    filters = [f'[0:v]crop={cw}:{ch}:{cx}:{cy},scale={width}:{height}:force_original_aspect_ratio=decrease:force_divisible_by=2,setsar=1,fps=30[video]', f'[1:v]fps=30,setsar=1[bg]', '[bg][video]overlay=(W-w)/2:(H-h)/2:shortest=1[base0]']
+    previous = 'base0'
+    for i, overlay in enumerate(spec['textOverlays']):
+        output = f'base{i+1}'
+        start, end = overlay['startMs'] / 1000, overlay['endMs'] / 1000
+        filters.append(f"[{previous}][{i+2}:v]overlay=0:0:enable='between(t,{start},{end})'[{output}]")
+        previous = output
+    segments = [s for s in spec['segments'] if s['enabled']]
+    count = len(segments)
+    filters.append(f'[{previous}]split={count}' + ''.join(f'[vs{i}]' for i in range(count)))
+    filters.append(f'[{audio_input}]asplit={count}' + ''.join(f'[as{i}]' for i in range(count)))
+    for i, s in enumerate(segments):
+        start, end = s['startMs'] / 1000, s['endMs'] / 1000
+        filters.append(f'[vs{i}]trim=start={start}:end={end},setpts=PTS-STARTPTS[v{i}]')
+        filters.append(f'[as{i}]atrim=start={start}:end={end},asetpts=PTS-STARTPTS' + (',volume=0' if spec['audio']['mode'] == 'mute' else '') + f'[a{i}]')
+    filters.append(''.join(f'[v{i}][a{i}]' for i in range(count)) + f'concat=n={count}:v=1:a=1[outv][outa]')
+    target = root / (job['id'] + '.mp4')
+    run([*args, '-filter_complex_threads', '2', '-filter_complex', ';'.join(filters), '-map', '[outv]', '-map', '[outa]', '-c:v', 'libx264', '-preset', 'fast', '-crf', '19', '-maxrate', '20M', '-bufsize', '40M', '-threads', '4', '-pix_fmt', 'yuv420p', '-r', '30', '-c:a', 'aac', '-b:a', '128k', '-ar', '48000', '-movflags', '+faststart', str(target)])
+    thumb = root / (job['id'] + '.jpg'); thumbnail(target, thumb)
+    return {**probe(target), 'file': target.name, 'thumbnail': thumb.name, 'size': target.stat().st_size}
+
+
+if __name__ == '__main__':
+    try:
+        job = json.loads(Path(sys.argv[1]).read_text(encoding='utf-8'))
+        root = Path(job['root']).resolve()
+        action = job['action']
+        result = import_media(job, root) if action in ['download', 'import'] else audio(job, root) if action == 'audio' else render(job, root)
+        print(json.dumps(result))
+    except Exception as exc:
+        print(str(exc), file=sys.stderr)
+        sys.exit(1)
