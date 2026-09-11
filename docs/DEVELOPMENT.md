@@ -30,3 +30,5 @@
 ## Release checks
 
 Run tests, typecheck, build, and the local smoke workflow. Verify browser preview, crop/text/background, split/restore, save/reopen, and a short audio separation. Check the exported MP4's duration and codecs. Do not commit test media, runtime state, model weights or credentials.
+
+For worker changes, also run `python -m unittest worker.test_media` using the Python environment with `worker/requirements.txt` installed. Worker stdout must contain only the final JSON result; library logs and progress belong on stderr. In particular, yt-dlp's `quiet` option alone does not suppress its progress bar. An Instagram empty-media response is an upstream retrieval failure, separate from this worker protocol.

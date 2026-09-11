@@ -3,6 +3,7 @@
 Files are named by the API. FFmpeg receives argument arrays, never a shell command.
 """
 import json
+from contextlib import redirect_stdout
 import math
 import re
 import subprocess
@@ -55,7 +56,7 @@ def import_media(job, root):
     meta = {}
     if job['action'] == 'download':
         import yt_dlp
-        options = {'quiet': True, 'no_warnings': True, 'noplaylist': True, 'playlist_items': '1', 'socket_timeout': 25, 'retries': 2, 'format': 'bestvideo*+bestaudio/best', 'merge_output_format': 'mp4', 'ffmpeg_location': FFMPEG, 'max_filesize': 300 * 1024 * 1024, 'outtmpl': str(root / (job['id'] + '-download.%(ext)s'))}
+        options = {'quiet': True, 'no_warnings': True, 'noprogress': True, 'logtostderr': True, 'noplaylist': True, 'playlist_items': '1', 'socket_timeout': 25, 'retries': 2, 'format': 'bestvideo*+bestaudio/best', 'merge_output_format': 'mp4', 'ffmpeg_location': FFMPEG, 'max_filesize': 300 * 1024 * 1024, 'outtmpl': str(root / (job['id'] + '-download.%(ext)s'))}
         def limit(info, *, incomplete=False):
             if (info.get('duration') or 0) > 900:
                 return 'Video exceeds 15 minutes.'
@@ -137,13 +138,20 @@ def render(job, root):
     return {**probe(target), 'file': target.name, 'thumbnail': thumb.name, 'size': target.stat().st_size}
 
 
-if __name__ == '__main__':
-    try:
-        job = json.loads(Path(sys.argv[1]).read_text(encoding='utf-8'))
+def execute(job):
+    # stdout is the API's JSON protocol, never a library's progress/log stream.
+    # yt-dlp's quiet flag alone still allows carriage-return progress output.
+    with redirect_stdout(sys.stderr):
         root = Path(job['root']).resolve()
         action = job['action']
         result = import_media(job, root) if action in ['download', 'import'] else audio(job, root) if action == 'audio' else render(job, root)
-        print(json.dumps(result))
+    print(json.dumps(result))
+
+
+if __name__ == '__main__':
+    try:
+        job = json.loads(Path(sys.argv[1]).read_text(encoding='utf-8'))
+        execute(job)
     except Exception as exc:
         print(str(exc), file=sys.stderr)
         sys.exit(1)
