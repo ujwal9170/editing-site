@@ -41,14 +41,17 @@ def thumbnail(file, target):
     run(['-i', str(file), '-frames:v', '1', '-vf', 'scale=360:-2', str(target)], 60)
 
 
-def normalize(source, target):
-    info = probe(source)
+def normalize(source, target, info=None):
+    info = info or probe(source)
     if not info['width']:
         raise ValueError('This file does not contain a video stream.')
     args = ['-i', str(source)]
     if not info['hasAudio']:
         args += ['-f', 'lavfi', '-i', 'anullsrc=r=48000:cl=stereo']
-    args += ['-map', '0:v:0', '-map', '0:a:0' if info['hasAudio'] else '1:a:0', '-t', str(info['duration']), '-vf', 'scale=trunc(iw/2)*2:trunc(ih/2)*2', '-c:v', 'libx264', '-crf', '18', '-preset', 'fast', '-pix_fmt', 'yuv420p', '-c:a', 'aac', '-b:a', '128k', '-ar', '48000', '-ac', '2', '-movflags', '+faststart', str(target)]
+    # 192k keeps this internal editing copy closer to the source than the 128k
+    # ceiling Instagram documents for the final export (see render()); the
+    # export re-encode still lands on the platform-compliant bitrate.
+    args += ['-map', '0:v:0', '-map', '0:a:0' if info['hasAudio'] else '1:a:0', '-t', str(info['duration']), '-vf', 'scale=trunc(iw/2)*2:trunc(ih/2)*2', '-c:v', 'libx264', '-crf', '18', '-preset', 'fast', '-pix_fmt', 'yuv420p', '-c:a', 'aac', '-b:a', '192k', '-ar', '48000', '-ac', '2', '-movflags', '+faststart', str(target)]
     run(args)
     return probe(target)
 
@@ -97,9 +100,14 @@ def import_media(job, root):
     else:
         source = root / job['input']
     target = root / (job['id'] + '.mp4')
-    info = normalize(source, target)
+    source_info = probe(source)
+    info = normalize(source, target, source_info)
     audio = root / (job['id'] + '.wav')
-    run(['-i', str(target), '-vn', '-ar', '44100', '-ac', '2', '-c:a', 'pcm_s16le', str(audio)])
+    # Extract from the original source, not the AAC-encoded editing copy: the
+    # separation model should see one lossy hop (the source's own encoding),
+    # not two (source codec, then our re-encode).
+    audio_source = source if source_info['hasAudio'] else target
+    run(['-i', str(audio_source), '-vn', '-ar', '44100', '-ac', '2', '-c:a', 'pcm_s16le', str(audio)])
     thumb = root / (job['id'] + '.jpg')
     thumbnail(target, thumb)
     source.unlink(missing_ok=True)

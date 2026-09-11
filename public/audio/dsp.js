@@ -141,6 +141,23 @@
     return result;
   }
   function wav(left, right) {
+    // Attenuate toward the true peak instead of hard-clamping each sample:
+    // clamping distorts only the handful of samples that exceed [-1, 1] and
+    // sounds like clipping, while a single uniform scale keeps the whole
+    // signal's shape intact. peak starts at 1 so audio that never approaches
+    // full scale is written unchanged — this can only reduce gain, never add it.
+    let peak = 1;
+    for (let i = 0; i < left.length; i++) {
+      const a = Math.abs(left[i]),
+        b = Math.abs(right[i]);
+      if (a > peak) peak = a;
+      if (b > peak) peak = b;
+    }
+    const scale = 32767 / peak;
+    if (peak > 1)
+      console.warn(
+        `AudioDSP.wav: attenuating by ${(20 * Math.log10(scale / 32767)).toFixed(2)} dB to avoid clipping (peak ${peak.toFixed(3)}).`,
+      );
     const buffer = new ArrayBuffer(44 + left.length * 4),
       view = new DataView(buffer);
     const string = (offset, s) => {
@@ -164,7 +181,7 @@
       for (let c = 0; c < 2; c++)
         view.setInt16(
           44 + i * 4 + c * 2,
-          Math.max(-1, Math.min(1, c ? right[i] : left[i])) * 32767,
+          Math.max(-32768, Math.min(32767, Math.round((c ? right[i] : left[i]) * scale))),
           true,
         );
     return buffer;
