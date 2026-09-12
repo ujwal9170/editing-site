@@ -616,7 +616,12 @@ export default function Studio() {
                           {x.caption || "No caption added"}
                         </p>
                         <div className="card-footer">
-                          <span>{size(x.size)}</span>
+                          <span>
+                            {size(x.size)}
+                            {x.expiresAt
+                              ? ` · ${Math.max(0, Math.ceil((x.expiresAt - Date.now()) / 86400_000))} days left`
+                              : ""}
+                          </span>
                           <div>
                             <button
                               title="Preview caption"

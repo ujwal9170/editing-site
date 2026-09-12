@@ -53,6 +53,7 @@ export type Export = {
   duration: number;
   createdAt: number;
   size: number;
+  expiresAt: number;
 };
 export type Job = {
   id: string;

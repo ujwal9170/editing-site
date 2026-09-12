@@ -60,6 +60,10 @@ export async function createApp({
   const app = Fastify({ logger, bodyLimit: 24 * 1024 * 1024 });
   const ttl =
     Math.max(1, Number(process.env.SOURCE_RETENTION_DAYS) || 7) * 86400_000;
+  // One-time migration: exports made before auto-expiry existed get a fresh
+  // retention window starting now, rather than being exempt forever.
+  for (const item of repo.list("export"))
+    if (!item.expiresAt) repo.put("export", { ...item, expiresAt: Date.now() + ttl });
   const sessions = new Map(),
     attempts = new Map();
   const password = process.env.WORKSPACE_PASSWORD;
@@ -497,6 +501,7 @@ export async function createApp({
             name: project.name,
             caption: project.caption,
             edit: spec,
+            expiresAt: Date.now() + ttl,
             ...result,
           });
           await clean();
@@ -507,11 +512,14 @@ export async function createApp({
       return reply.code(202).send({ job });
     }),
   );
-  app.delete("/api/exports/:id", async (req) => {
-    const item = get("export", req.params.id);
+  async function deleteExport(item) {
     for (const key of ["file", "thumbnail"])
       if (item[key]) await rm(path.join(root, item[key]), { force: true });
     repo.remove("export", item.id);
+  }
+  app.delete("/api/exports/:id", async (req) => {
+    const item = get("export", req.params.id);
+    await deleteExport(item);
     return { ok: true };
   });
   app.get("/api/files/:kind/:id/:type", (req, reply) => {
@@ -547,6 +555,8 @@ export async function createApp({
           if (item[key]) await rm(path.join(root, item[key]), { force: true });
         repo.put("media", { ...item, status: "expired" });
       }
+    for (const item of repo.list("export"))
+      if (item.expiresAt < Date.now() && !queue.busy) await deleteExport(item);
     for (const [t, expiry] of sessions)
       if (expiry < Date.now()) sessions.delete(t);
     for (const [ip, a] of attempts)

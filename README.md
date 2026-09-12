@@ -73,7 +73,7 @@ docs/                Target product plan and extension guide
 
 Edit state is versioned JSON; source files are immutable after import. Background and text artwork use the same canvas functions as the preview, then FFmpeg composites those PNGs before applying timeline cuts. Vocal separation covers the full source so processed audio stays aligned as clips are removed/restored. Applying a stem uploads it to this application's storage for server rendering, not to an AI service.
 
-`runtime/` holds SQLite, media, project derivatives and exports. Keep it on persistent storage and back it up. Opening a project refreshes its source's retention. Expired sources make associated projects unavailable until reimport; exported MP4s remain. Derivative cleanup beyond explicit export deletion is a follow-up task.
+`runtime/` holds SQLite, media, project derivatives and exports. Keep it on persistent storage and back it up. Opening a project refreshes its source's retention. Expired sources make associated projects unavailable until reimport. Exports also expire after the same retention window (`SOURCE_RETENTION_DAYS`, default 7 days) unless deleted sooner.
 
 Current development adapters use SQLite, a single worker queue, and local files. PostgreSQL, Redis/BullMQ, S3/R2 signed storage, per-user ownership and resilient distributed jobs remain part of the [target plan](docs/PRODUCT_PLAN.md). The application does not claim those cloud services are already implemented.
 
