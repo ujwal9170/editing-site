@@ -71,7 +71,7 @@ tests/               Validation, persistence, auth and DSP regressions
 docs/                Target product plan and extension guide
 ```
 
-Edit state is versioned JSON; source files are immutable after import. Background and text artwork use the same canvas functions as the preview, then FFmpeg composites those PNGs before applying timeline cuts. Vocal separation covers the full source so processed audio stays aligned as clips are removed/restored. Applying a stem uploads it to this application's storage for server rendering, not to an AI service.
+Edit state is versioned JSON; source files are immutable after import. Background and text artwork use the same canvas functions as the preview, then FFmpeg composites those PNGs before applying timeline cuts. Each overlay is cropped to the pixels it actually draws and composited at that offset, so a text overlay costs a small blend instead of a full 1080×1920 one; text that renders nothing is dropped before it reaches the worker. Vocal separation covers the full source so processed audio stays aligned as clips are removed/restored. Applying a stem uploads it to this application's storage for server rendering, not to an AI service.
 
 `runtime/` holds SQLite, media, project derivatives and exports. Keep it on persistent storage and back it up. Opening a project refreshes its source's retention. Expired sources make associated projects unavailable until reimport. Exports also expire after the same retention window (`SOURCE_RETENTION_DAYS`, default 7 days) unless deleted sooner.
 

@@ -64,6 +64,14 @@ export async function createApp({
   // retention window starting now, rather than being exempt forever.
   for (const item of repo.list("export"))
     if (!item.expiresAt) repo.put("export", { ...item, expiresAt: Date.now() + ttl });
+  // An image background or image overlay rasterizes to a full 1080x1920 PNG,
+  // and base64 adds a third on top (~11 MB for a worst-case frame). These
+  // ceilings leave room for that; ARTWORK_BUDGET keeps the combined payload
+  // under the route's body limit so oversized artwork fails with a readable
+  // message instead of a transport-level 413.
+  const ARTWORK_MAX_CHARS = 12_000_000;
+  const ARTWORK_BUDGET = 56_000_000;
+  const ARTWORK_BODY_LIMIT = 64 * 1024 * 1024;
   const sessions = new Map(),
     attempts = new Map();
   const password = process.env.WORKSPACE_PASSWORD;
@@ -439,6 +447,7 @@ export async function createApp({
   );
   app.post(
     "/api/projects/:id/renders",
+    { bodyLimit: ARTWORK_BODY_LIMIT },
     projectOperation(async (req, reply) => {
       const project = get("project", req.params.id),
         media = mediaReady(project.mediaId);
@@ -451,25 +460,67 @@ export async function createApp({
       const data = z
         .object({
           revision: z.number().int(),
-          background: z.string().max(8_000_000),
-          overlays: z.array(z.string().max(8_000_000)).max(12),
+          background: z.string().max(ARTWORK_MAX_CHARS),
+          overlays: z
+            .array(
+              z.object({
+                png: z.string().max(ARTWORK_MAX_CHARS).nullable(),
+                x: z.number().int().min(0).max(1080),
+                y: z.number().int().min(0).max(1920),
+              }),
+            )
+            .max(12),
         })
         .parse(req.body);
       if (data.revision !== project.revision)
         throw new Error("Save the latest edit before rendering.");
       if (data.overlays.length !== spec.textOverlays.length)
         throw new Error("Overlay count does not match project.");
+      const total = data.overlays.reduce(
+        (sum, o) => sum + (o.png?.length || 0),
+        data.background.length,
+      );
+      if (total > ARTWORK_BUDGET)
+        throw new Error(
+          "This artwork is too large to render. Use fewer or smaller image overlays.",
+        );
       const id = randomUUID();
       const files = [];
-      for (const [i, png] of [data.background, ...data.overlays].entries()) {
+      const writeArtwork = async (png, file) => {
         if (!png.startsWith("data:image/png;base64,"))
           throw new Error("Expected PNG artwork.");
-        const file = `${id}-art-${i}.png`;
         await writeFile(
           path.join(root, file),
           Buffer.from(png.split(",")[1], "base64"),
         );
         files.push(file);
+      };
+      const clean = async () => {
+        for (const f of files) await rm(path.join(root, f), { force: true });
+      };
+      const backgroundFile = `${id}-art-bg.png`;
+      // Overlays arrive cropped to their drawn area; blank text sends no PNG
+      // at all, so it never becomes a composite pass. Timings stay on the
+      // server's validated spec rather than the client's payload.
+      const overlays = [];
+      try {
+        await writeArtwork(data.background, backgroundFile);
+        for (const [i, o] of data.overlays.entries()) {
+          if (o.png === null) continue;
+          const file = `${id}-art-${i}.png`;
+          await writeArtwork(o.png, file);
+          overlays.push({
+            file,
+            x: o.x,
+            y: o.y,
+            startMs: spec.textOverlays[i].startMs,
+            endMs: spec.textOverlays[i].endMs,
+          });
+        }
+      } catch (error) {
+        // Rejected artwork must not leave half-written PNGs behind.
+        await clean();
+        throw error;
       }
       let audioFile = null;
       if (["remove-vocals", "vocals-only"].includes(spec.audio.mode)) {
@@ -478,9 +529,6 @@ export async function createApp({
           throw new Error("Apply processed audio first.");
         audioFile = audio.file;
       }
-      const clean = async () => {
-        for (const f of files) await rm(path.join(root, f), { force: true });
-      };
       const job = queue.add(
         "render",
         {
@@ -492,7 +540,8 @@ export async function createApp({
           input: media.file,
           spec,
           audioFile,
-          art: files,
+          background: backgroundFile,
+          overlays,
         },
         async (result) => {
           repo.put("export", {
