@@ -56,5 +56,30 @@ class WorkerProtocolTests(unittest.TestCase):
         self.assertEqual(output.getvalue(), '')
 
 
+
+class OverlayCompositingTests(unittest.TestCase):
+    def test_overlays_composite_at_their_own_offset(self):
+        # Each overlay blends only its own box, so the offset must survive into
+        # the filter graph and the input index must follow the -i order.
+        filters, last = media.overlay_filters([
+            {'file': 'a.png', 'x': 90, 'y': 198, 'startMs': 0, 'endMs': 2000},
+            {'file': 'b.png', 'x': 0, 'y': 1700, 'startMs': 500, 'endMs': 6000},
+        ])
+        self.assertEqual(last, 'base2')
+        self.assertEqual(filters, [
+            "[base0][2:v]overlay=90:198:enable='between(t,0.0,2.0)'[base1]",
+            "[base1][3:v]overlay=0:1700:enable='between(t,0.5,6.0)'[base2]",
+        ])
+
+    def test_offsets_cannot_inject_filter_syntax(self):
+        with self.assertRaises(ValueError):
+            media.overlay_filters([
+                {'file': 'a.png', 'x': "0[x];drawbox", 'y': 0, 'startMs': 0, 'endMs': 1},
+            ])
+
+    def test_a_project_without_overlays_leaves_the_base_untouched(self):
+        self.assertEqual(media.overlay_filters([]), ([], 'base0'))
+
+
 if __name__ == '__main__':
     unittest.main()

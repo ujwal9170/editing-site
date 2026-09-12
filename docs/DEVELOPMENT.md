@@ -4,7 +4,7 @@
 
 1. Extend `Edit` in `lib/types.ts` and its runtime validation in `shared/validation.mjs` together. Preserve existing saved projects or introduce an explicit version migration.
 2. Add the controls to the relevant editor panel. Changes go through the editor's `change()` action so undo/redo and autosave continue to work.
-3. Update `lib/canvas.ts` for preview and `worker/media.py` for export. Prefer shared canvas artwork for effects that must visually match.
+3. Update `lib/canvas.ts` for preview and `worker/media.py` for export. Prefer shared canvas artwork for effects that must visually match. Artwork is drawn on the full canvas, then `artwork()` crops each overlay to its drawn bounds and sends `{ png, x, y }`; the worker composites at that offset. Keep offsets and box sizes even so the 4:2:0 chroma plane stays aligned, and keep the render route's `ARTWORK_*` ceilings in step with anything that makes artwork larger.
 4. Add a regression with an observable output (duration, dimensions, color, timing, reconstruction), not merely a duplicate of the implementation.
 
 ## Replace infrastructure independently
@@ -21,6 +21,7 @@
 - Audio separation does two inference passes; test on real vocal/music mixtures and multiple devices before calling its quality production-ready.
 - The pinned model parameters came from the user's existing tested prototype. Windowing, compensation and edge handling should be compared against that implementation with identical audio fixtures.
 - Canvas rasterized text matches the selected bundled fonts; caption text is separate from burned-in text.
+- Overlay artwork is uploaded as base64 inside one JSON body, which the API buffers in memory. The render route allows a larger body than the rest of the API so image backgrounds and image overlays fit later; move this route to multipart before raising those ceilings much further.
 - Undo/redo currently applies to edit-spec changes, not name/caption typing.
 - The canvas is fixed to 9:16 (1080×1920). Fill Reel frame crops centrally; Fit full video restores the whole source inside that canvas.
 - The existing expiry cleaner removes expired sources. Full project/derivative lifecycle cleanup and storage quotas are still required before long-term hosting.

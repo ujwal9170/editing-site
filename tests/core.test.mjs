@@ -1,6 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { mkdtempSync, rmSync } from "node:fs";
+import { mkdtempSync, rmSync, writeFileSync, existsSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import {
@@ -281,4 +281,87 @@ test("STFT/ISTFT preserves stereo low-frequency signal and sample alignment", ()
   const wav = new DataView(d.wav(vl, vr));
   assert.equal(wav.getUint32(24, true), 44100);
   assert.equal(wav.getUint16(22, true), 2);
+});
+
+test("render skips blank overlays and keeps each one's own offset", async () => {
+  const root = mkdtempSync(path.join(tmpdir(), "frame-render-"));
+  const queued = [];
+  const repo = createRepository(root);
+  const media = repo.put("media", {
+    name: "clip",
+    caption: "",
+    status: "ready",
+    duration: 6,
+    width: 1280,
+    height: 720,
+    file: "source.mp4",
+  });
+  writeFileSync(path.join(root, "source.mp4"), "fixture");
+  const edit = initialEdit(6000);
+  const overlay = {
+    font: "Inter",
+    color: "#FFFFFF",
+    size: 56,
+    x: 0.5,
+    y: 0.15,
+  };
+  edit.textOverlays = [
+    { ...overlay, id: "a", text: "Hello", startMs: 0, endMs: 2000 },
+    { ...overlay, id: "b", text: "   ", startMs: 1000, endMs: 6000 },
+  ];
+  const project = repo.put("project", {
+    mediaId: media.id,
+    name: "clip edit",
+    caption: "",
+    revision: 1,
+    edit,
+  });
+  const app = await createApp({
+    dataDir: root,
+    queueFactory: () => ({
+      busy: false,
+      add(type, payload) {
+        queued.push(payload);
+        return { id: "test-job", type, status: "queued" };
+      },
+    }),
+  });
+  const png = "data:image/png;base64," + Buffer.from("png").toString("base64");
+  const render = (overlays) =>
+    app.inject({
+      method: "POST",
+      url: `/api/projects/${project.id}/renders`,
+      payload: { revision: 1, background: png, overlays },
+    });
+  try {
+    const response = await render([
+      { png, x: 240, y: 280 },
+      { png: null, x: 0, y: 0 },
+    ]);
+    assert.equal(response.statusCode, 202);
+    const job = queued.at(-1);
+    // Whitespace-only text draws nothing, so it never becomes a composite pass.
+    assert.equal(job.overlays.length, 1);
+    // The drawn one keeps its box offset and the server's own validated timing.
+    assert.deepEqual(job.overlays[0], {
+      file: job.overlays[0].file,
+      x: 240,
+      y: 280,
+      startMs: 0,
+      endMs: 2000,
+    });
+    assert.ok(existsSync(path.join(root, job.background)));
+    assert.ok(existsSync(path.join(root, job.overlays[0].file)));
+    // Offsets outside the canvas never reach the worker's filter graph.
+    for (const bad of [
+      [{ png, x: -4, y: 0 }, { png: null, x: 0, y: 0 }],
+      [{ png, x: 0, y: 4000 }, { png: null, x: 0, y: 0 }],
+      [{ png, x: 0, y: 0 }],
+    ])
+      assert.equal((await render(bad)).statusCode, 400);
+  } finally {
+    await app.close();
+    repo.close();
+    rmSync(root, { recursive: true, force: true });
+  }
 });
