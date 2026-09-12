@@ -17,7 +17,8 @@
     "test": "node --test tests/*.test.mjs",
     "test:smoke": "node scripts/smoke.mjs",
     "format": "prettier --write app components lib shared server scripts tests public/audio docs README.md next.config.mjs",
-    "setup:audio": "node scripts/setup-audio.mjs"
+    "setup:audio": "node scripts/setup-audio.mjs",
+    "user": "node scripts/user.mjs"
   },
   "dependencies": {
     "@fastify/multipart": "^9.0.0",

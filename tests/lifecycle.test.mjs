@@ -4,6 +4,7 @@ import { mkdtempSync, rmSync, writeFileSync, existsSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { createRepository } from "../server/repository.mjs";
+import { createUser } from "../server/users.mjs";
 import { createApp } from "../server/app.mjs";
 import { initialEdit } from "../shared/validation.mjs";
 import { cleanVideoName } from "../shared/names.mjs";
@@ -11,7 +12,10 @@ import { cleanVideoName } from "../shared/names.mjs";
 async function fixture(t) {
   const root = mkdtempSync(path.join(tmpdir(), "frame-lifecycle-"));
   const repo = createRepository(root);
+  const owner = await createUser(repo, "owner", "owner-password");
+  const userId = owner.id;
   const media = repo.put("media", {
+    userId,
     name: "Video by channel_name",
     caption: "keep caption",
     status: "ready",
@@ -21,6 +25,7 @@ async function fixture(t) {
     audioFile: "source.wav",
   });
   const edit = repo.put("project", {
+    userId,
     mediaId: media.id,
     name: "Video by channel_name · edit",
     caption: "keep edit caption",
@@ -28,6 +33,7 @@ async function fixture(t) {
     edit: initialEdit(6000),
   });
   const second = repo.put("project", {
+    userId,
     mediaId: media.id,
     name: "Another edit",
     caption: "",
@@ -35,11 +41,13 @@ async function fixture(t) {
     edit: initialEdit(6000),
   });
   const audio = repo.put("audio", {
+    userId,
     projectId: edit.id,
     status: "ready",
     file: "stem.wav",
   });
   const output = repo.put("export", {
+    userId,
     projectId: edit.id,
     name: "Video by channel_name · edit",
     caption: "export caption",
@@ -56,12 +64,25 @@ async function fixture(t) {
   ])
     writeFileSync(path.join(root, file), "test fixture");
   const app = await createApp({ dataDir: root });
+  const login = await app.inject({
+    method: "POST",
+    url: "/api/auth",
+    payload: { username: "owner", password: "owner-password" },
+  });
+  const cookie = login.headers["set-cookie"].split(";")[0];
+  // Every request in these tests runs as the owner of the fixture records.
+  const inject = (options) =>
+    app.inject(
+      typeof options === "string"
+        ? { url: options, headers: { cookie } }
+        : { ...options, headers: { ...options.headers, cookie } },
+    );
   t.after(async () => {
     await app.close();
     repo.close();
     rmSync(root, { recursive: true, force: true });
   });
-  return { root, repo, app, media, edit, second, audio, output };
+  return { root, repo, app, inject, userId, media, edit, second, audio, output };
 }
 
 test("existing names lose only the leading Video by prefix", async (t) => {
@@ -76,7 +97,7 @@ test("existing names lose only the leading Video by prefix", async (t) => {
 
 test("deleting an edit removes its stem but preserves source, other edits and exports", async (t) => {
   const f = await fixture(t);
-  const response = await f.app.inject({
+  const response = await f.inject({
     method: "DELETE",
     url: `/api/projects/${f.edit.id}`,
   });
@@ -91,7 +112,7 @@ test("deleting an edit removes its stem but preserves source, other edits and ex
   assert.equal(existsSync(path.join(f.root, "export.mp4")), true);
   assert.equal(
     (
-      await f.app.inject({
+      await f.inject({
         method: "PATCH",
         url: `/api/projects/${f.edit.id}`,
         payload: f.edit,
@@ -104,10 +125,10 @@ test("deleting an edit removes its stem but preserves source, other edits and ex
 test("media with edits requires explicit current-count confirmation and preserves exports", async (t) => {
   const f = await fixture(t);
   const url = `/api/media/${f.media.id}`;
-  assert.equal((await f.app.inject({ method: "DELETE", url })).statusCode, 409);
+  assert.equal((await f.inject({ method: "DELETE", url })).statusCode, 409);
   assert.equal(
     (
-      await f.app.inject({
+      await f.inject({
         method: "DELETE",
         url: `${url}?deleteEdits=true&expectedEdits=1`,
       })
@@ -116,7 +137,7 @@ test("media with edits requires explicit current-count confirmation and preserve
   );
   assert.ok(f.repo.get("media", f.media.id));
   assert.ok(f.repo.get("project", f.edit.id));
-  const response = await f.app.inject({
+  const response = await f.inject({
     method: "DELETE",
     url: `${url}?deleteEdits=true&expectedEdits=2`,
   });
@@ -132,7 +153,7 @@ test("media with edits requires explicit current-count confirmation and preserve
   assert.equal(existsSync(path.join(f.root, "source.mp4")), false);
   assert.equal(existsSync(path.join(f.root, "stem.wav")), false);
   assert.equal(
-    (await f.app.inject(`/api/files/export/${f.output.id}/file`)).statusCode,
+    (await f.inject(`/api/files/export/${f.output.id}/file`)).statusCode,
     200,
   );
 });
@@ -146,7 +167,7 @@ test("active processing prevents deletion until the relevant job finishes", asyn
   });
   assert.equal(
     (
-      await f.app.inject({
+      await f.inject({
         method: "DELETE",
         url: `/api/projects/${f.edit.id}`,
       })
@@ -155,7 +176,7 @@ test("active processing prevents deletion until the relevant job finishes", asyn
   );
   assert.equal(
     (
-      await f.app.inject({
+      await f.inject({
         method: "DELETE",
         url: `/api/media/${f.media.id}?deleteEdits=true&expectedEdits=2`,
       })
@@ -165,7 +186,7 @@ test("active processing prevents deletion until the relevant job finishes", asyn
   f.repo.put("job", { ...job, status: "ready" });
   assert.equal(
     (
-      await f.app.inject({
+      await f.inject({
         method: "DELETE",
         url: `/api/projects/${f.edit.id}`,
       })

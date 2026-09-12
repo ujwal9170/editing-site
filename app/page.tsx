@@ -18,6 +18,10 @@ import {
   Music2,
   RotateCw,
   AlertCircle,
+  LogOut,
+  Users,
+  KeyRound,
+  UserPlus,
 } from "lucide-react";
 import { api, fileUrl, clock, size, awaitJob } from "@/lib/api";
 import type { Media, Project, Export, Job } from "@/lib/types";
@@ -31,6 +35,18 @@ type QueueItem = {
   media: Media;
   status: "queued" | "processing" | "done" | "failed";
   detail: string;
+};
+type AdminUser = {
+  id: string;
+  username: string;
+  role: string;
+  createdAt: number;
+  lastSeenAt: number | null;
+  online: boolean;
+  mediaCount: number;
+  exportCount: number;
+  storageBytes: number;
+  isSelf: boolean;
 };
 
 export default function Studio() {
@@ -47,6 +63,10 @@ export default function Studio() {
     [error, setError] = useState(""),
     [busy, setBusy] = useState(false),
     [authed, setAuthed] = useState<boolean | null>(null),
+    [username, setUsername] = useState(""),
+    [role, setRole] = useState<string | null>(null),
+    [users, setUsers] = useState<AdminUser[]>([]),
+    [newUser, setNewUser] = useState({ username: "", password: "" }),
     [password, setPassword] = useState(""),
     [caption, setCaption] = useState<Media | null>(null),
     [captionPreview, setCaptionPreview] = useState<Export | null>(null),
@@ -152,9 +172,23 @@ export default function Studio() {
   }
   useEffect(() => {
     api("/auth")
-      .then((a) => setAuthed(a.authenticated))
+      .then((a) => {
+        setAuthed(a.authenticated);
+        if (a.username) setUsername(a.username);
+        setRole(a.role ?? null);
+      })
       .catch((e) => setError(e.message));
   }, []);
+  const isAdmin = role === "admin";
+  async function refreshUsers() {
+    setUsers(await api<AdminUser[]>("/admin/users"));
+  }
+  useEffect(() => {
+    if (!isAdmin || view !== "admin") return;
+    refreshUsers().catch((e) => setError(e.message));
+    const timer = setInterval(() => refreshUsers().catch(() => {}), 15000);
+    return () => clearInterval(timer);
+  }, [isAdmin, view]);
   useEffect(() => {
     if (!authed) return;
     refresh().catch((e) => setError(e.message));
@@ -181,6 +215,56 @@ export default function Studio() {
       setImporting(false);
       await refresh();
     });
+  }
+  async function addUser() {
+    await attempt(async () => {
+      await api("/admin/users", {
+        method: "POST",
+        body: JSON.stringify(newUser),
+      });
+      setNewUser({ username: "", password: "" });
+      await refreshUsers();
+    });
+  }
+  async function resetUserPassword(u: AdminUser) {
+    const next = prompt(`New password for "${u.username}" (min 8 characters):`);
+    if (!next) return;
+    await attempt(async () => {
+      await api(`/admin/users/${u.id}/password`, {
+        method: "POST",
+        body: JSON.stringify({ password: next }),
+      });
+      await refreshUsers();
+      setError("");
+    });
+  }
+  async function removeUser(u: AdminUser) {
+    const usage = `${u.mediaCount} video(s), ${u.exportCount} export(s), ${size(u.storageBytes)}`;
+    if (
+      !confirm(
+        `Remove the account "${u.username}"?\n\nThey currently hold ${usage}.\n\nClick OK to continue, then choose whether to delete their files too.`,
+      )
+    )
+      return;
+    const alsoDelete = confirm(
+      `Delete "${u.username}"'s ${usage} as well?\n\nOK = delete their files and free the space (cannot be undone).\nCancel = keep their files on disk.`,
+    );
+    await attempt(async () => {
+      await api(`/admin/users/${u.id}?deleteContent=${alsoDelete}`, {
+        method: "DELETE",
+      });
+      await refreshUsers();
+    });
+  }
+  async function signOut() {
+    await api("/auth/logout", { method: "POST" }).catch(() => {});
+    setAuthed(false);
+    setProject(null);
+    setMedia([]);
+    setProjects([]);
+    setExports([]);
+    setJobs([]);
+    setView("media");
   }
   async function openProject(id: string) {
     await attempt(async () => {
@@ -244,16 +328,30 @@ export default function Studio() {
           onSubmit={(e) => {
             e.preventDefault();
             attempt(async () => {
-              await api("/auth", {
+              const me = await api("/auth", {
                 method: "POST",
-                body: JSON.stringify({ password }),
+                body: JSON.stringify({ username, password }),
               });
+              setUsername(me.username ?? username);
+              setRole(me.role ?? null);
+              setPassword("");
               setAuthed(true);
             });
           }}
         >
           <label>
-            Workspace password
+            Username
+            <input
+              value={username}
+              onChange={(e) => setUsername(e.target.value)}
+              autoComplete="username"
+              autoCapitalize="none"
+              spellCheck={false}
+              required
+            />
+          </label>
+          <label>
+            Password
             <input
               type="password"
               value={password}
@@ -263,14 +361,14 @@ export default function Studio() {
             />
           </label>
           <button className="primary" disabled={busy}>
-            Open workspace <ArrowUpRight size={18} />
+            Sign in <ArrowUpRight size={18} />
           </button>
         </form>
         {error && <p role="alert">{error}</p>}
       </main>
     );
   return (
-    <div className="studio">
+    <div className={`studio${view === "editor" && project ? " editing" : ""}`}>
       <aside className="sidebar">
         <a href="/" className="brand">
           <Film size={26} /> frame<span>/</span>
@@ -281,6 +379,7 @@ export default function Studio() {
             ["media", "Media library", FolderOpen],
             ["editor", "Editor", Scissors],
             ["exports", "Edited videos", Film],
+            ...(isAdmin ? [["admin", "People", Users]] : []),
           ].map(([key, label, Icon]: any) => (
             <button
               key={key}
@@ -302,10 +401,19 @@ export default function Studio() {
           <p>Vocal separation lives right inside your editor.</p>
         </div>
         <div className="workspace-id">
-          <span>U</span>
+          <span>{(username || "?").slice(0, 1).toUpperCase()}</span>
           <div>
-            Your workspace<small>Development · shared library</small>
+            {username || "Signed in"}
+            <small>Your private workspace</small>
           </div>
+          <button
+            className="sign-out"
+            aria-label="Sign out"
+            title="Sign out"
+            onClick={signOut}
+          >
+            <LogOut size={17} />
+          </button>
         </div>
       </aside>
       <div className="main">
@@ -316,12 +424,19 @@ export default function Studio() {
               ? "Media library"
               : view === "editor"
                 ? "Editor"
-                : "Edited videos"}
+                : view === "admin"
+                  ? "People"
+                  : "Edited videos"}
           </div>
           <div className="header-right">
-            <span className="local-label">Local workspace</span>
-            <button className="avatar" aria-label="Workspace owner">
-              U
+            <span className="local-label">{username || "Signed in"}</span>
+            <button
+              className="avatar"
+              aria-label={`Sign out${username ? ` (${username})` : ""}`}
+              title="Sign out"
+              onClick={signOut}
+            >
+              {(username || "?").slice(0, 1).toUpperCase()}
             </button>
           </div>
         </header>
@@ -340,7 +455,117 @@ export default function Studio() {
             {active[0].type}. You can keep editing.
           </div>
         )}
-        {view === "editor" && project ? (
+        {view === "admin" && isAdmin ? (
+          <section className="library">
+            <div className="page-heading">
+              <div>
+                <div className="eyebrow">WORKSPACE ADMIN</div>
+                <h1>People.</h1>
+                <p>
+                  {users.length} {users.length === 1 ? "account" : "accounts"} ·{" "}
+                  {users.filter((u) => u.online).length} online now
+                </p>
+              </div>
+            </div>
+            <div className="admin-add">
+              <strong>
+                <UserPlus size={17} /> Add someone
+              </strong>
+              <div className="row">
+                <label>
+                  Username
+                  <input
+                    value={newUser.username}
+                    autoCapitalize="none"
+                    spellCheck={false}
+                    placeholder="e.g. ravi"
+                    onChange={(e) =>
+                      setNewUser({ ...newUser, username: e.target.value })
+                    }
+                  />
+                </label>
+                <label>
+                  Password
+                  <input
+                    type="text"
+                    value={newUser.password}
+                    placeholder="at least 8 characters"
+                    onChange={(e) =>
+                      setNewUser({ ...newUser, password: e.target.value })
+                    }
+                  />
+                </label>
+              </div>
+              <button
+                className="primary wide"
+                disabled={
+                  busy ||
+                  newUser.username.trim().length < 3 ||
+                  newUser.password.length < 8
+                }
+                onClick={addUser}
+              >
+                Create account
+              </button>
+              <p className="hint">
+                New accounts are ordinary members. Admin rights are granted only
+                from the command line (`pnpm user promote &lt;name&gt;`), so a
+                stolen admin session cannot create more admins.
+              </p>
+            </div>
+            <div className="admin-list">
+              {users.map((u) => (
+                <div className="admin-row" key={u.id}>
+                  <span
+                    className={`presence ${u.online ? "online" : ""}`}
+                    aria-hidden="true"
+                  />
+                  <div className="admin-row-body">
+                    <h3>
+                      {u.username}
+                      {u.role === "admin" && (
+                        <span className="role-tag">admin</span>
+                      )}
+                      {u.isSelf && <span className="role-tag">you</span>}
+                    </h3>
+                    <p>
+                      {u.online
+                        ? "Online now"
+                        : u.lastSeenAt
+                          ? `Last seen ${new Date(u.lastSeenAt).toLocaleString()}`
+                          : "Never signed in"}{" "}
+                      · {u.mediaCount} video{u.mediaCount === 1 ? "" : "s"} ·{" "}
+                      {size(u.storageBytes)}
+                    </p>
+                  </div>
+                  <button
+                    className="subtle compact"
+                    title="Set a new password"
+                    onClick={() => resetUserPassword(u)}
+                  >
+                    <KeyRound size={15} />
+                  </button>
+                  <button
+                    className="subtle compact"
+                    title={
+                      u.isSelf
+                        ? "You cannot remove your own account"
+                        : "Remove account"
+                    }
+                    disabled={busy || u.isSelf}
+                    onClick={() => removeUser(u)}
+                  >
+                    <Trash2 size={15} />
+                  </button>
+                </div>
+              ))}
+            </div>
+            <p className="hint">
+              Admins manage accounts only — nobody, including you, can open
+              another person's videos or edits from here.
+            </p>
+          </section>
+        ) : view === "editor" && project ? (
           <Editor
             key={project.id}
             initial={project}
@@ -350,6 +575,7 @@ export default function Studio() {
               refresh();
             }}
             onSaved={(p) => setProject(p)}
+            onBack={() => setProject(null)}
           />
         ) : (
           <section className="library">
@@ -706,6 +932,28 @@ export default function Studio() {
           </section>
         )}
       </div>
+      {!(view === "editor" && project) && (
+        <nav className="mobile-nav" aria-label="Sections">
+          {[
+            ["media", "Media", FolderOpen],
+            ["editor", "Edits", Scissors],
+            ["exports", "Videos", Film],
+            ...(isAdmin ? [["admin", "People", Users]] : []),
+          ].map(([key, label, Icon]: any) => (
+            <button
+              key={key}
+              className={view === key ? "active" : ""}
+              onClick={() => {
+                if (key === "editor") setProject(null);
+                setView(key);
+              }}
+            >
+              <Icon size={22} />
+              <span>{label}</span>
+            </button>
+          ))}
+        </nav>
+      )}
       <input
         ref={input}
         type="file"

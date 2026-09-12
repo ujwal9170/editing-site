@@ -11,6 +11,27 @@ import {
 } from "../shared/validation.mjs";
 import { createRepository } from "../server/repository.mjs";
 import { createApp } from "../server/app.mjs";
+import { createUser } from "../server/users.mjs";
+
+// Every API route now requires an account, so tests that exercise routes sign
+// in first and send the session cookie with each request.
+async function authorize(app, root, username = "tester") {
+  const repo = createRepository(root);
+  await createUser(repo, username, "test-password-123");
+  repo.close();
+  const login = await app.inject({
+    method: "POST",
+    url: "/api/auth",
+    payload: { username, password: "test-password-123" },
+  });
+  const cookie = login.headers["set-cookie"].split(";")[0];
+  return (options) =>
+    app.inject(
+      typeof options === "string"
+        ? { url: options, headers: { cookie } }
+        : { ...options, headers: { ...options.headers, cookie } },
+    );
+}
 import "../public/audio/dsp.js";
 
 test("URL normalization rejects non-Instagram and credential-bearing URLs", () => {
@@ -80,6 +101,7 @@ test("download API routes all three sources to the same import queue", async () 
       },
     }),
   });
+  const inject = await authorize(app, root);
   try {
     for (const [source, url] of [
       ["instagram", "https://instagram.com/reel/ABC123/"],
@@ -88,7 +110,7 @@ test("download API routes all three sources to the same import queue", async () 
     ]) {
       assert.equal(
         (
-          await app.inject({
+          await inject({
             method: "POST",
             url: "/api/downloads",
             payload: { url },
@@ -96,7 +118,7 @@ test("download API routes all three sources to the same import queue", async () 
         ).statusCode,
         400,
       );
-      const response = await app.inject({
+      const response = await inject({
         method: "POST",
         url: "/api/downloads",
         payload: { url, confirmed: true },
@@ -106,7 +128,7 @@ test("download API routes all three sources to the same import queue", async () 
       assert.equal(queued.at(-1).platform, source);
       assert.equal(queued.at(-1).url, videoLink(url).url);
     }
-    assert.equal((await app.inject("/api/media")).json().length, 3);
+    assert.equal((await inject("/api/media")).json().length, 3);
   } finally {
     await app.close();
     rmSync(root, { recursive: true });
@@ -165,10 +187,11 @@ test("repository persists records across restarts", () => {
 test("API rejects cross-site mutation, invalid downloads, and unknown assets", async () => {
   const root = mkdtempSync(path.join(tmpdir(), "frame-api-"));
   const app = await createApp({ dataDir: root });
+  const inject = await authorize(app, root);
   try {
     assert.equal(
       (
-        await app.inject({
+        await inject({
           method: "POST",
           url: "/api/downloads",
           headers: { origin: "https://evil.test" },
@@ -182,7 +205,7 @@ test("API rejects cross-site mutation, invalid downloads, and unknown assets", a
     );
     assert.equal(
       (
-        await app.inject({
+        await inject({
           method: "POST",
           url: "/api/downloads",
           payload: { url: "https://example.com" },
@@ -190,17 +213,17 @@ test("API rejects cross-site mutation, invalid downloads, and unknown assets", a
       ).statusCode,
       400,
     );
-    assert.equal((await app.inject("/api/media")).statusCode, 200);
+    assert.equal((await inject("/api/media")).statusCode, 200);
     assert.equal(
       (
-        await app.inject(
+        await inject(
           "/api/files/media/00000000-0000-4000-8000-000000000000/file",
         )
       ).statusCode,
       404,
     );
     assert.equal(
-      (await app.inject("/api/files/media/../../workspace.sqlite/file"))
+      (await inject("/api/files/media/../../workspace.sqlite/file"))
         .statusCode,
       404,
     );
@@ -209,41 +232,215 @@ test("API rejects cross-site mutation, invalid downloads, and unknown assets", a
     rmSync(root, { recursive: true });
   }
 });
-test("workspace password gates API files and issues an HttpOnly session", async () => {
+test("accounts gate the API and issue an HttpOnly session", async () => {
   const root = mkdtempSync(path.join(tmpdir(), "frame-auth-"));
-  const original = process.env.WORKSPACE_PASSWORD;
-  process.env.WORKSPACE_PASSWORD = "test-only-password";
+  const repo = createRepository(root);
+  await createUser(repo, "alice", "alice-password");
+  repo.close();
   const app = await createApp({ dataDir: root });
   try {
     assert.equal((await app.inject("/api/media")).statusCode, 401);
+    for (const payload of [
+      { username: "alice", password: "wrong" },
+      { username: "nobody", password: "alice-password" },
+    ])
+      assert.equal(
+        (await app.inject({ method: "POST", url: "/api/auth", payload }))
+          .statusCode,
+        401,
+      );
+    const login = await app.inject({
+      method: "POST",
+      url: "/api/auth",
+      payload: { username: "alice", password: "alice-password" },
+    });
+    assert.match(login.headers["set-cookie"], /HttpOnly/);
+    const cookie = login.headers["set-cookie"].split(";")[0];
+    assert.equal((await app.inject({ url: "/api/media", headers: { cookie } })).statusCode, 200);
+    await app.inject({ method: "POST", url: "/api/auth/logout", headers: { cookie } });
+    assert.equal((await app.inject({ url: "/api/media", headers: { cookie } })).statusCode, 401);
+  } finally {
+    await app.close();
+    rmSync(root, { recursive: true });
+  }
+});
+test("one account cannot see, open or download another account's work", async () => {
+  const root = mkdtempSync(path.join(tmpdir(), "frame-isolation-"));
+  const repo = createRepository(root);
+  await createUser(repo, "alice", "alice-password");
+  await createUser(repo, "bob", "bob-password");
+  // Alice owns a ready media item; Bob owns nothing.
+  const owned = repo.put("media", {
+    userId: repo.list("user").find((u) => u.username === "alice").id,
+    name: "alice clip",
+    caption: "private",
+    source: "upload",
+    status: "ready",
+    duration: 6,
+    file: "alice.mp4",
+    thumbnail: "alice.jpg",
+  });
+  repo.close();
+  const app = await createApp({ dataDir: root });
+  const signIn = async (username, password) => {
+    const r = await app.inject({
+      method: "POST",
+      url: "/api/auth",
+      payload: { username, password },
+    });
+    return r.headers["set-cookie"].split(";")[0];
+  };
+  try {
+    const alice = await signIn("alice", "alice-password");
+    const bob = await signIn("bob", "bob-password");
+
+    assert.equal(
+      JSON.parse((await app.inject({ url: "/api/media", headers: { cookie: alice } })).body).length,
+      1,
+      "owner sees their own media",
+    );
+    assert.deepEqual(
+      JSON.parse((await app.inject({ url: "/api/media", headers: { cookie: bob } })).body),
+      [],
+      "another account sees an empty library",
+    );
+    // Knowing the id must not be enough: records and their bytes are both
+    // refused, and with 404 so the id's existence stays hidden.
+    for (const url of [
+      `/api/files/media/${owned.id}/file`,
+      `/api/files/media/${owned.id}/caption`,
+    ])
+      assert.equal(
+        (await app.inject({ url, headers: { cookie: bob } })).statusCode,
+        404,
+        `${url} must not serve another account's data`,
+      );
     assert.equal(
       (
         await app.inject({
           method: "POST",
-          url: "/api/auth",
-          payload: { password: "wrong" },
+          url: "/api/projects",
+          headers: { cookie: bob },
+          payload: { mediaId: owned.id },
         })
       ).statusCode,
-      401,
+      404,
+      "another account cannot start an edit from media they do not own",
     );
-    const login = await app.inject({
-      method: "POST",
-      url: "/api/auth",
-      payload: { password: "test-only-password" },
-    });
-    assert.match(login.headers["set-cookie"], /HttpOnly/);
     assert.equal(
       (
         await app.inject({
-          url: "/api/media",
-          headers: { cookie: login.headers["set-cookie"].split(";")[0] },
+          method: "DELETE",
+          url: `/api/media/${owned.id}`,
+          headers: { cookie: bob },
         })
       ).statusCode,
-      200,
+      404,
+      "another account cannot delete media they do not own",
+    );
+    // And the owner is unaffected by all of that.
+    assert.equal(
+      (await app.inject({ url: `/api/files/media/${owned.id}/caption`, headers: { cookie: alice } })).body,
+      "private",
     );
   } finally {
-    if (original === undefined) delete process.env.WORKSPACE_PASSWORD;
-    else process.env.WORKSPACE_PASSWORD = original;
+    await app.close();
+    rmSync(root, { recursive: true });
+  }
+});
+test("admin routes manage accounts only, and members cannot reach them", async () => {
+  const root = mkdtempSync(path.join(tmpdir(), "frame-admin-"));
+  const repo = createRepository(root);
+  const boss = await createUser(repo, "boss", "boss-password", "admin");
+  await createUser(repo, "member", "member-password");
+  // Content belonging to the member, so removal choices can be checked.
+  repo.put("media", {
+    userId: repo.list("user").find((u) => u.username === "member").id,
+    name: "member clip",
+    status: "ready",
+    size: 1234,
+    file: "member.mp4",
+  });
+  repo.close();
+  const app = await createApp({ dataDir: root });
+  const signIn = async (username, password) =>
+    (
+      await app.inject({
+        method: "POST",
+        url: "/api/auth",
+        payload: { username, password },
+      })
+    ).headers["set-cookie"].split(";")[0];
+  try {
+    const admin = await signIn("boss", "boss-password");
+    const member = await signIn("member", "member-password");
+
+    // A plain member is refused everywhere in /api/admin.
+    for (const [method, url] of [
+      ["GET", "/api/admin/users"],
+      ["POST", "/api/admin/users"],
+    ])
+      assert.equal(
+        (
+          await app.inject({
+            method,
+            url,
+            headers: { cookie: member },
+            payload: { username: "sneaky", password: "sneaky-password" },
+          })
+        ).statusCode,
+        403,
+        `${url} must be admin-only`,
+      );
+
+    const listed = JSON.parse(
+      (await app.inject({ url: "/api/admin/users", headers: { cookie: admin } }))
+        .body,
+    );
+    assert.equal(listed.length, 2);
+    const target = listed.find((u) => u.username === "member");
+    assert.equal(target.mediaCount, 1, "admin sees counts");
+    assert.equal(target.storageBytes, 1234, "admin sees storage totals");
+    assert.ok(!("file" in target), "but never the media itself");
+
+    // Accounts created through the web are always plain members.
+    await app.inject({
+      method: "POST",
+      url: "/api/admin/users",
+      headers: { cookie: admin },
+      payload: { username: "newbie", password: "newbie-password" },
+    });
+    const afterAdd = JSON.parse(
+      (await app.inject({ url: "/api/admin/users", headers: { cookie: admin } }))
+        .body,
+    );
+    assert.equal(afterAdd.find((u) => u.username === "newbie").role, "member");
+
+    // An admin cannot delete themselves, or the only admin account.
+    assert.equal(
+      (
+        await app.inject({
+          method: "DELETE",
+          url: `/api/admin/users/${boss.id}`,
+          headers: { cookie: admin },
+        })
+      ).statusCode,
+      409,
+    );
+
+    // Removing without deleteContent keeps the member's records.
+    const removal = await app.inject({
+      method: "DELETE",
+      url: `/api/admin/users/${target.id}?deleteContent=false`,
+      headers: { cookie: admin },
+    });
+    assert.equal(removal.statusCode, 200);
+    assert.equal(removal.json().removedRecords, 0);
+    const check = createRepository(root);
+    assert.equal(check.list("media").length, 1, "their files were kept");
+    assert.equal(check.list("user").length, 2, "the account is gone");
+    check.close();
+  } finally {
     await app.close();
     rmSync(root, { recursive: true });
   }
@@ -287,7 +484,9 @@ test("render skips blank overlays and keeps each one's own offset", async () => 
   const root = mkdtempSync(path.join(tmpdir(), "frame-render-"));
   const queued = [];
   const repo = createRepository(root);
+  const owner = await createUser(repo, "renderer", "test-password-123");
   const media = repo.put("media", {
+    userId: owner.id,
     name: "clip",
     caption: "",
     status: "ready",
@@ -310,6 +509,7 @@ test("render skips blank overlays and keeps each one's own offset", async () => 
     { ...overlay, id: "b", text: "   ", startMs: 1000, endMs: 6000 },
   ];
   const project = repo.put("project", {
+    userId: owner.id,
     mediaId: media.id,
     name: "clip edit",
     caption: "",
@@ -326,9 +526,16 @@ test("render skips blank overlays and keeps each one's own offset", async () => 
       },
     }),
   });
+  const login = await app.inject({
+    method: "POST",
+    url: "/api/auth",
+    payload: { username: "renderer", password: "test-password-123" },
+  });
+  const cookie = login.headers["set-cookie"].split(";")[0];
+  const inject = (options) => app.inject({ ...options, headers: { cookie } });
   const png = "data:image/png;base64," + Buffer.from("png").toString("base64");
   const render = (overlays) =>
-    app.inject({
+    inject({
       method: "POST",
       url: `/api/projects/${project.id}/renders`,
       payload: { revision: 1, background: png, overlays },

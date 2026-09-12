@@ -94,7 +94,18 @@ Multi-platform validation covers supported URL forms, permission checks, platfor
 
 ## Deployment and access
 
-For a persistent Node/Python host, run `pnpm build`, install Python dependencies and the audio model, then `pnpm start`. Set `HOST=0.0.0.0`, a strong `WORKSPACE_PASSWORD`, and the exact HTTPS `PUBLIC_ORIGIN` behind a reverse proxy. The launcher refuses a non-loopback bind without a password. Members share the workspace; this is not per-user private storage.
+For a persistent Node/Python host, run `pnpm build`, install Python dependencies and the audio model, then `pnpm start`. Set `HOST=0.0.0.0` and the exact HTTPS `PUBLIC_ORIGIN` behind a reverse proxy. The launcher refuses a non-loopback bind until at least one account exists.
+
+Each person signs in with their own account and sees only their own media, edits and exports. Accounts are created from the command line, so the server exposes no signup route:
+
+```sh
+pnpm user add <username>     # prompts for a password
+pnpm user list
+pnpm user passwd <username>
+pnpm user remove <username>
+```
+
+Ownership is enforced server-side on every record and on the file routes, so knowing another person's media id is not enough to read, download or delete it.
 
 Serve the app with COOP/COEP headers (configured in `next.config.mjs`) to enable WASM threads. The reverse proxy must allow 300 MB uploads and video range requests. Runtime files, `.env`, and SQLite must never be served as public static files. The API streams only record-referenced media files and checks the workspace session. This full pipeline needs a persistent Node/Python host; a static-only deployment cannot execute FFmpeg jobs.
 

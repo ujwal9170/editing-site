@@ -80,6 +80,7 @@ export function createQueue(repo, root) {
         progress: 0,
         projectId: payload.projectId,
         mediaId: payload.mediaId,
+        userId: payload.userId,
       });
       pending.push({ job, payload, done, failed });
       void drain();

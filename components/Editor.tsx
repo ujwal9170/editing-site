@@ -17,8 +17,10 @@ import {
   LoaderCircle,
   Save,
   ChevronDown,
+  ChevronLeft,
   Smartphone,
   Server,
+  X,
 } from "lucide-react";
 import { api, fileUrl, clock, awaitJob } from "@/lib/api";
 import {
@@ -36,11 +38,13 @@ export default function Editor({
   onError,
   onExport,
   onSaved,
+  onBack,
 }: {
   initial: Project;
   onError: (e: string) => void;
   onExport: () => void;
   onSaved: (p: Project) => void;
+  onBack?: () => void;
 }) {
   const [edit, setEdit] = useState<Edit>(initial.edit),
     [name, setName] = useState(initial.name),
@@ -63,6 +67,7 @@ export default function Editor({
     [quality, setQuality] = useState<"1080p" | "720p">("1080p"),
     [destination, setDestination] = useState<"server" | "device">("server"),
     [exportMenuOpen, setExportMenuOpen] = useState(false),
+    [sheetOpen, setSheetOpen] = useState(false),
     [deviceSupported, setDeviceSupported] = useState(false),
     [deviceEligible, setDeviceEligible] = useState(false);
   const video = useRef<HTMLVideoElement>(null),
@@ -365,7 +370,16 @@ export default function Editor({
   return (
     <section className="editor">
       <div className="editor-heading">
-        <div>
+        {onBack && (
+          <button
+            className="back-button"
+            aria-label="Back to projects"
+            onClick={onBack}
+          >
+            <ChevronLeft size={22} />
+          </button>
+        )}
+        <div className="editor-title">
           <input
             className="project-name"
             aria-label="Project name"
@@ -378,8 +392,11 @@ export default function Editor({
           </span>
         </div>
         <div className="row">
-          <button className="subtle" onClick={() => save().catch(() => {})}>
-            <Save size={16} /> Save
+          <button
+            className="subtle save-action"
+            onClick={() => save().catch(() => {})}
+          >
+            <Save size={16} /> <span className="label-text">Save</span>
           </button>
           <div className="split-button">
             <button
@@ -392,9 +409,14 @@ export default function Editor({
               ) : (
                 <Download size={17} />
               )}{" "}
-              {rendering
-                ? "Rendering…"
-                : `Export ${quality}${destination === "device" ? " · this device" : ""}`}
+              <span className="export-label-full">
+                {rendering
+                  ? "Rendering…"
+                  : `Export ${quality}${destination === "device" ? " · this device" : ""}`}
+              </span>
+              <span className="export-label-short">
+                {rendering ? "…" : "Export"}
+              </span>
             </button>
             <button
               className="primary split-caret"
@@ -491,7 +513,7 @@ export default function Editor({
             </span>
           </div>
           <div className="playback">
-            <span>PREVIEW</span>
+            <span className="playback-label">PREVIEW</span>
             <button
               aria-label={playing ? "Pause video" : "Play video"}
               className="play-button"
@@ -597,27 +619,47 @@ export default function Editor({
             </p>
           </div>
         </div>
-        <aside className="inspector">
+        <aside className={`inspector ${sheetOpen ? "sheet-open" : ""}`}>
           <div className="tool-tabs">
             {[
-              ["crop", Crop],
-              ["text", Type],
-              ["background", Palette],
-              ["audio", Music2],
-              ["caption", Captions],
-            ].map(([key, Icon]: any) => (
+              ["crop", Crop, "Crop"],
+              ["text", Type, "Text"],
+              ["background", Palette, "Colour"],
+              ["audio", Music2, "Audio"],
+              ["caption", Captions, "Caption"],
+            ].map(([key, Icon, label]: any) => (
               <button
                 key={key}
-                title={key}
-                aria-label={`${key} tools`}
+                title={label}
+                aria-label={`${label} tools`}
                 className={tab === key ? "active" : ""}
-                onClick={() => setTab(key)}
+                onClick={() => {
+                  // On mobile the same tab acts as a toggle for its sheet,
+                  // which is how CapCut/InShot behave; on desktop the panel
+                  // is always visible so this only ever switches tabs.
+                  if (tab === key) setSheetOpen((v) => !v);
+                  else {
+                    setTab(key);
+                    setSheetOpen(true);
+                  }
+                }}
               >
-                <Icon size={19} />
+                <Icon size={21} />
+                <span className="tool-tab-label">{label}</span>
               </button>
             ))}
           </div>
           <div className="tool-body">
+            <div className="sheet-header">
+              <span className="sheet-grip" aria-hidden="true" />
+              <button
+                className="sheet-close"
+                aria-label="Close panel"
+                onClick={() => setSheetOpen(false)}
+              >
+                <X size={20} />
+              </button>
+            </div>
             {tab === "crop" && (
               <>
                 <div className="eyebrow">FRAME IT YOUR WAY</div>
