@@ -102,19 +102,81 @@ export function preview(
     )
     .forEach((t) => text(ctx, t, width, height));
 }
+export type OverlayArtwork = { png: string | null; x: number; y: number };
+const OVERLAY_PADDING = 2;
+// Text is drawn on the full 1080x1920 canvas so preview and export stay pixel
+// identical, then cropped to the pixels it actually covers. The worker
+// composites that box at (x, y) instead of alpha-blending a whole transparent
+// frame per overlay, which is where most of the render time used to go.
+function drawnBounds(
+  ctx: CanvasRenderingContext2D,
+  width: number,
+  height: number,
+) {
+  const pixels = new Uint32Array(
+    ctx.getImageData(0, 0, width, height).data.buffer,
+  );
+  let minX = width,
+    minY = height,
+    maxX = -1,
+    maxY = -1;
+  for (let y = 0; y < height; y++) {
+    const row = y * width;
+    let first = -1,
+      last = -1;
+    // A cleared pixel is exactly 0x00000000, so any non-zero word was drawn.
+    for (let x = 0; x < width; x++)
+      if (pixels[row + x] !== 0) {
+        if (first < 0) first = x;
+        last = x;
+      }
+    if (first < 0) continue;
+    if (y < minY) minY = y;
+    maxY = y;
+    if (first < minX) minX = first;
+    if (last > maxX) maxX = last;
+  }
+  if (maxX < 0) return null;
+  // Even offsets and sizes keep the 4:2:0 chroma plane aligned on export.
+  const x = Math.max(0, minX - OVERLAY_PADDING) & ~1;
+  const y = Math.max(0, minY - OVERLAY_PADDING) & ~1;
+  let w = Math.min(width - x, maxX - x + 1 + OVERLAY_PADDING);
+  let h = Math.min(height - y, maxY - y + 1 + OVERLAY_PADDING);
+  if (w % 2) w = Math.min(width - x, w + 1);
+  if (h % 2) h = Math.min(height - y, h + 1);
+  return { x, y, width: w, height: h };
+}
 export async function artwork(edit: Edit) {
   await document.fonts.ready;
   const [width, height] = dimensions(edit.canvas.aspectRatio);
   const canvas = document.createElement("canvas");
   canvas.width = width;
   canvas.height = height;
-  const ctx = canvas.getContext("2d")!;
+  const ctx = canvas.getContext("2d", { willReadFrequently: true })!;
   background(ctx, edit, width, height);
   const bg = canvas.toDataURL("image/png");
-  const overlays = edit.textOverlays.map((t) => {
+  const crop = document.createElement("canvas");
+  const cropCtx = crop.getContext("2d")!;
+  const overlays: OverlayArtwork[] = edit.textOverlays.map((t) => {
     ctx.clearRect(0, 0, width, height);
     text(ctx, t, width, height);
-    return canvas.toDataURL("image/png");
+    const box = drawnBounds(ctx, width, height);
+    // Whitespace-only text draws nothing; the worker skips these entirely.
+    if (!box) return { png: null, x: 0, y: 0 };
+    crop.width = box.width;
+    crop.height = box.height;
+    cropCtx.drawImage(
+      canvas,
+      box.x,
+      box.y,
+      box.width,
+      box.height,
+      0,
+      0,
+      box.width,
+      box.height,
+    );
+    return { png: crop.toDataURL("image/png"), x: box.x, y: box.y };
   });
   return { background: bg, overlays };
 }

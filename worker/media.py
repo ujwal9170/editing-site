@@ -143,6 +143,23 @@ def isolate(job, root):
     return {'duration': info['duration'], 'width': info['width'], 'height': info['height'], 'hasAudio': True, 'file': target.name, 'thumbnail': thumb.name, 'size': target.stat().st_size}
 
 
+def overlay_filters(overlays, previous='base0'):
+    """Chain each cropped overlay at its own offset.
+
+    Input index i+2 matches the order render() appends '-loop 1 -i' arguments
+    (0 is the source, 1 is the background). Offsets are coerced to int here so
+    nothing but a number can reach the filter string.
+    """
+    filters = []
+    for i, overlay in enumerate(overlays):
+        output = f'base{i+1}'
+        x, y = int(overlay['x']), int(overlay['y'])
+        start, end = float(overlay['startMs']) / 1000, float(overlay['endMs']) / 1000
+        filters.append(f"[{previous}][{i+2}:v]overlay={x}:{y}:enable='between(t,{start},{end})'[{output}]")
+        previous = output
+    return filters, previous
+
+
 def render(job, root):
     spec = job['spec']
     if spec['canvas']['aspectRatio'] != '9:16':
@@ -151,28 +168,36 @@ def render(job, root):
     source = root / job['input']
     info = probe(source)
     args = ['-i', str(source)]
-    for artwork in job['art']:
-        file = root / artwork
+    background = root / job['background']
+    with Image.open(background) as image:
+        if image.format != 'PNG' or image.size != (width, height):
+            raise ValueError('Background dimensions do not match the project canvas.')
+    args += ['-loop', '1', '-i', str(background)]
+    # Overlays are cropped to the pixels they draw, so FFmpeg blends a small box
+    # per overlay instead of a full 1080x1920 frame. Each box must still land
+    # inside the canvas.
+    overlays = job['overlays']
+    for overlay in overlays:
+        file = root / overlay['file']
         with Image.open(file) as image:
-            if image.format != 'PNG' or image.size != (width, height):
-                raise ValueError('Artwork dimensions do not match the project canvas.')
+            if image.format != 'PNG':
+                raise ValueError('Artwork must be a PNG.')
+            box_width, box_height = image.size
+        if int(overlay['x']) + box_width > width or int(overlay['y']) + box_height > height:
+            raise ValueError('Overlay artwork falls outside the project canvas.')
         args += ['-loop', '1', '-i', str(file)]
     audio_input = '0:a'
     if job['audioFile']:
         args += ['-i', str(root / job['audioFile'])]
-        audio_input = str(len(job['art']) + 1) + ':a'
+        audio_input = str(len(overlays) + 2) + ':a'
     c = spec['crop']
     cw = max(2, int(info['width'] * c['width']) // 2 * 2)
     ch = max(2, int(info['height'] * c['height']) // 2 * 2)
     cx = min(info['width'] - cw, int(info['width'] * c['x']) // 2 * 2)
     cy = min(info['height'] - ch, int(info['height'] * c['y']) // 2 * 2)
     filters = [f'[0:v]crop={cw}:{ch}:{cx}:{cy},scale={width}:{height}:force_original_aspect_ratio=decrease:force_divisible_by=2,setsar=1,fps=30[video]', f'[1:v]fps=30,setsar=1[bg]', '[bg][video]overlay=(W-w)/2:(H-h)/2:shortest=1[base0]']
-    previous = 'base0'
-    for i, overlay in enumerate(spec['textOverlays']):
-        output = f'base{i+1}'
-        start, end = overlay['startMs'] / 1000, overlay['endMs'] / 1000
-        filters.append(f"[{previous}][{i+2}:v]overlay=0:0:enable='between(t,{start},{end})'[{output}]")
-        previous = output
+    chain, previous = overlay_filters(overlays)
+    filters += chain
     segments = [s for s in spec['segments'] if s['enabled']]
     count = len(segments)
     filters.append(f'[{previous}]split={count}' + ''.join(f'[vs{i}]' for i in range(count)))
