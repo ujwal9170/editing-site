@@ -401,6 +401,54 @@ header {
 .card-menu-list button:hover:not(:disabled) {
   background: #30363a;
 }
+.split-button {
+  position: relative;
+  display: flex;
+}
+.split-button .primary {
+  border-radius: 8px 0 0 8px;
+}
+.split-caret {
+  border-radius: 0 8px 8px 0;
+  border-left: 1px solid #0002;
+  padding: 11px 10px;
+}
+.export-options {
+  right: 0;
+  padding: 10px;
+  min-width: 240px;
+}
+.export-options-label {
+  display: block;
+  font-size: 11px;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  color: var(--muted);
+  padding: 8px 6px 4px;
+}
+.export-options-label:first-child {
+  padding-top: 2px;
+}
+.export-option-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 7px 6px;
+  border-radius: 6px;
+  font-size: 13px;
+  cursor: pointer;
+}
+.export-option-row:has(input:not(:disabled)):hover {
+  background: #30363a;
+}
+.export-option-row:has(input:disabled) {
+  color: var(--muted);
+  cursor: not-allowed;
+}
+.export-option-row input {
+  width: auto;
+  accent-color: var(--accent);
+}
 .menu-overlay {
   position: fixed;
   inset: 0;

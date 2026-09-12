@@ -100,8 +100,9 @@ const rendered = await api(`/projects/${p.id}/renders`, {
   headers: { "Content-Type": "application/json" },
   body: JSON.stringify({
     revision: saved.revision,
+    quality: "1080p",
     background: await png("background.png"),
-    overlays: [await png("overlay.png")],
+    overlays: [{ png: await png("overlay.png"), x: 0, y: 0 }],
   }),
 });
 const result = await wait(rendered.job.id);
@@ -110,6 +111,22 @@ assert.ok(Math.abs(output.duration - 4) < 0.15);
 assert.equal(output.width, 1080);
 assert.equal(output.height, 1920);
 assert.equal(output.caption, "Caption smoke test ✓");
+const rendered720 = await api(`/projects/${p.id}/renders`, {
+  method: "POST",
+  headers: { "Content-Type": "application/json" },
+  body: JSON.stringify({
+    revision: saved.revision,
+    quality: "720p",
+    background: await png("background-720.png"),
+    overlays: [{ png: null, x: 0, y: 0 }],
+  }),
+});
+const result720 = await wait(rendered720.job.id);
+const output720 = (await api("/exports")).find(
+  (e) => e.id === result720.resultId,
+);
+assert.equal(output720.width, 720);
+assert.equal(output720.height, 1280);
 console.log(
   JSON.stringify(
     {

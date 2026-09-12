@@ -16,6 +16,9 @@ import {
   Plus,
   LoaderCircle,
   Save,
+  ChevronDown,
+  Smartphone,
+  Server,
 } from "lucide-react";
 import { api, fileUrl, clock, awaitJob } from "@/lib/api";
 import {
@@ -56,7 +59,12 @@ export default function Editor({
       url: string;
       blob: Blob;
       mode: string;
-    } | null>(null);
+    } | null>(null),
+    [quality, setQuality] = useState<"1080p" | "720p">("1080p"),
+    [destination, setDestination] = useState<"server" | "device">("server"),
+    [exportMenuOpen, setExportMenuOpen] = useState(false),
+    [deviceSupported, setDeviceSupported] = useState(false),
+    [deviceEligible, setDeviceEligible] = useState(false);
   const video = useRef<HTMLVideoElement>(null),
     derived = useRef<HTMLAudioElement>(null),
     canvas = useRef<HTMLCanvasElement>(null),
@@ -105,6 +113,20 @@ export default function Editor({
     },
     [stem],
   );
+  useEffect(() => {
+    import("@/lib/deviceExport").then(({ deviceExportSupported }) =>
+      setDeviceSupported(deviceExportSupported()),
+    );
+  }, []);
+  useEffect(() => {
+    import("@/lib/deviceExport").then(({ deviceExportEligible }) =>
+      setDeviceEligible(deviceExportEligible(edit.audio.mode)),
+    );
+  }, [edit.audio.mode]);
+  useEffect(() => {
+    if (destination === "device" && (!deviceSupported || !deviceEligible))
+      setDestination("server");
+  }, [deviceSupported, deviceEligible]);
   function change(next: Edit) {
     setPast((p) => [...p.slice(-59), edit]);
     setFuture([]);
@@ -241,17 +263,50 @@ export default function Editor({
       crop: { x: (1 - width) / 2, y: (1 - height) / 2, width, height },
     });
   }
+  async function exportOnDevice(p: Project) {
+    const { renderOnDevice } = await import("@/lib/deviceExport");
+    abort.current = new AbortController();
+    const blob = await renderOnDevice({
+      videoUrl: fileUrl("media", media.id),
+      audioUrl:
+        edit.audio.mode === "vocals-only" && edit.audio.derivativeId
+          ? fileUrl("audio", edit.audio.derivativeId)
+          : null,
+      edit,
+      quality,
+      sourceWidth: media.width,
+      sourceHeight: media.height,
+      onProgress: (s) => setAudioStatus(s),
+      signal: abort.current.signal,
+    });
+    setAudioStatus("");
+    const body = new FormData();
+    body.append("file", blob, "export.mp4");
+    const { job } = await api(
+      `/projects/${initial.id}/renders/device?revision=${p.revision}&quality=${quality}`,
+      { method: "POST", body },
+    );
+    await awaitJob(job.id);
+  }
   async function exportVideo() {
     setRendering(true);
     onError("");
     try {
       const p = await save();
-      const images = await artwork(edit);
-      const { job } = await api(`/projects/${initial.id}/renders`, {
-        method: "POST",
-        body: JSON.stringify({ ...images, revision: p.revision }),
-      });
-      await awaitJob(job.id);
+      if (destination === "device") {
+        if (!deviceSupported || !deviceEligible)
+          throw new Error(
+            "On-device export isn't available for this edit. Use server export instead.",
+          );
+        await exportOnDevice(p);
+      } else {
+        const images = await artwork(edit, quality);
+        const { job } = await api(`/projects/${initial.id}/renders`, {
+          method: "POST",
+          body: JSON.stringify({ ...images, revision: p.revision, quality }),
+        });
+        await awaitJob(job.id);
+      }
       onExport();
     } catch (e: any) {
       onError(e.message);
@@ -326,18 +381,84 @@ export default function Editor({
           <button className="subtle" onClick={() => save().catch(() => {})}>
             <Save size={16} /> Save
           </button>
-          <button
-            className="primary"
-            disabled={rendering}
-            onClick={exportVideo}
-          >
-            {rendering ? (
-              <LoaderCircle className="spin" size={17} />
-            ) : (
-              <Download size={17} />
-            )}{" "}
-            {rendering ? "Rendering…" : "Export video"}
-          </button>
+          <div className="split-button">
+            <button
+              className="primary"
+              disabled={rendering}
+              onClick={exportVideo}
+            >
+              {rendering ? (
+                <LoaderCircle className="spin" size={17} />
+              ) : (
+                <Download size={17} />
+              )}{" "}
+              {rendering
+                ? "Rendering…"
+                : `Export ${quality}${destination === "device" ? " · this device" : ""}`}
+            </button>
+            <button
+              className="primary split-caret"
+              disabled={rendering}
+              aria-label="Export options"
+              aria-haspopup="menu"
+              aria-expanded={exportMenuOpen}
+              onClick={() => setExportMenuOpen((v) => !v)}
+            >
+              <ChevronDown size={16} />
+            </button>
+            {exportMenuOpen && (
+              <div className="card-menu-list export-options" role="menu">
+                <span className="export-options-label">Quality</span>
+                <label className="export-option-row">
+                  <input
+                    type="radio"
+                    name="quality"
+                    checked={quality === "1080p"}
+                    onChange={() => setQuality("1080p")}
+                  />
+                  1080p
+                </label>
+                <label className="export-option-row">
+                  <input
+                    type="radio"
+                    name="quality"
+                    checked={quality === "720p"}
+                    onChange={() => setQuality("720p")}
+                  />
+                  720p
+                </label>
+                <span className="export-options-label">Render using</span>
+                <label className="export-option-row">
+                  <input
+                    type="radio"
+                    name="destination"
+                    checked={destination === "server"}
+                    onChange={() => setDestination("server")}
+                  />
+                  <Server size={15} /> Server
+                </label>
+                <label
+                  className="export-option-row"
+                  title={
+                    !deviceSupported
+                      ? "Your browser doesn't support on-device export."
+                      : !deviceEligible
+                        ? "On-device export only supports original audio or instrument removal."
+                        : ""
+                  }
+                >
+                  <input
+                    type="radio"
+                    name="destination"
+                    disabled={!deviceSupported || !deviceEligible}
+                    checked={destination === "device"}
+                    onChange={() => setDestination("device")}
+                  />
+                  <Smartphone size={15} /> This device
+                </label>
+              </div>
+            )}
+          </div>
         </div>
       </div>
       <div className="edit-workspace">
@@ -941,6 +1062,12 @@ export default function Editor({
           </div>
         </aside>
       </div>
+      {exportMenuOpen && (
+        <div
+          className="menu-overlay"
+          onClick={() => setExportMenuOpen(false)}
+        />
+      )}
     </section>
   );
 }

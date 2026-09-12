@@ -8,11 +8,15 @@ export const textColors = [
   "#38BDF8",
 ];
 export const bgColors = ["#111827", "#FFFFFF", "#7C3AED", "#FF4D6D", "#38BDF8"];
-export function dimensions(ratio: string): [number, number] {
-  return [1080, 1920];
+export function dimensions(
+  ratio: string,
+  quality: "1080p" | "720p" = "1080p",
+): [number, number] {
+  return quality === "720p" ? [720, 1280] : [1080, 1920];
 }
+export type Context2D = CanvasRenderingContext2D | OffscreenCanvasRenderingContext2D;
 export function background(
-  ctx: CanvasRenderingContext2D,
+  ctx: Context2D,
   edit: Edit,
   width: number,
   height: number,
@@ -38,7 +42,7 @@ export function background(
   ctx.fillRect(0, 0, width, height);
 }
 export function text(
-  ctx: CanvasRenderingContext2D,
+  ctx: Context2D,
   t: Overlay,
   width: number,
   height: number,
@@ -58,32 +62,39 @@ export function text(
     ),
   );
 }
-export function preview(
-  ctx: CanvasRenderingContext2D,
-  video: HTMLVideoElement,
+// Shared by the live preview and the on-device WebCodecs export -- a decoded
+// VideoSample's toCanvasImageSource() and an HTMLVideoElement both satisfy
+// CanvasImageSource, so the exact same crop/scale/overlay math produces
+// pixel-identical output whether the frame source is a <video> or a decoded
+// export frame.
+export function compose(
+  ctx: Context2D,
   edit: Edit,
+  width: number,
+  height: number,
+  frame: CanvasImageSource | null,
+  sourceWidth: number,
+  sourceHeight: number,
+  currentTimeMs: number,
 ) {
-  const [width, height] = dimensions(edit.canvas.aspectRatio);
-  if (ctx.canvas.width !== width) ctx.canvas.width = width;
-  if (ctx.canvas.height !== height) ctx.canvas.height = height;
   background(ctx, edit, width, height);
-  if (video.readyState >= 2) {
+  if (frame && sourceWidth && sourceHeight) {
     const c = edit.crop,
-      sw = Math.max(2, Math.floor((video.videoWidth * c.width) / 2) * 2),
-      sh = Math.max(2, Math.floor((video.videoHeight * c.height) / 2) * 2);
+      sw = Math.max(2, Math.floor((sourceWidth * c.width) / 2) * 2),
+      sh = Math.max(2, Math.floor((sourceHeight * c.height) / 2) * 2);
     const sx = Math.min(
-        video.videoWidth - sw,
-        Math.floor((video.videoWidth * c.x) / 2) * 2,
+        sourceWidth - sw,
+        Math.floor((sourceWidth * c.x) / 2) * 2,
       ),
       sy = Math.min(
-        video.videoHeight - sh,
-        Math.floor((video.videoHeight * c.y) / 2) * 2,
+        sourceHeight - sh,
+        Math.floor((sourceHeight * c.y) / 2) * 2,
       );
     const scale = Math.min(width / sw, height / sh);
     const w = Math.floor((sw * scale) / 2) * 2,
       h = Math.floor((sh * scale) / 2) * 2;
     ctx.drawImage(
-      video,
+      frame,
       sx,
       sy,
       sw,
@@ -95,12 +106,27 @@ export function preview(
     );
   }
   edit.textOverlays
-    .filter(
-      (t) =>
-        video.currentTime * 1000 >= t.startMs &&
-        video.currentTime * 1000 <= t.endMs,
-    )
+    .filter((t) => currentTimeMs >= t.startMs && currentTimeMs <= t.endMs)
     .forEach((t) => text(ctx, t, width, height));
+}
+export function preview(
+  ctx: CanvasRenderingContext2D,
+  video: HTMLVideoElement,
+  edit: Edit,
+) {
+  const [width, height] = dimensions(edit.canvas.aspectRatio);
+  if (ctx.canvas.width !== width) ctx.canvas.width = width;
+  if (ctx.canvas.height !== height) ctx.canvas.height = height;
+  compose(
+    ctx,
+    edit,
+    width,
+    height,
+    video.readyState >= 2 ? video : null,
+    video.videoWidth,
+    video.videoHeight,
+    video.currentTime * 1000,
+  );
 }
 export type OverlayArtwork = { png: string | null; x: number; y: number };
 const OVERLAY_PADDING = 2;
@@ -146,9 +172,12 @@ function drawnBounds(
   if (h % 2) h = Math.min(height - y, h + 1);
   return { x, y, width: w, height: h };
 }
-export async function artwork(edit: Edit) {
+export async function artwork(
+  edit: Edit,
+  quality: "1080p" | "720p" = "1080p",
+) {
   await document.fonts.ready;
-  const [width, height] = dimensions(edit.canvas.aspectRatio);
+  const [width, height] = dimensions(edit.canvas.aspectRatio, quality);
   const canvas = document.createElement("canvas");
   canvas.width = width;
   canvas.height = height;

@@ -49,7 +49,8 @@ Optional settings are documented in `.env.example`. Copy it to `.env` when overr
 - Timeline split, disable/delete and restore; export skips disabled segments. Timings remain in source coordinates.
 - Original audio, mute, Kim Vocal 2 vocal isolation and instrumental residual (`original - estimated vocals`), preview and apply.
 - Browser audio processing: WebGPU preferred, WASM fallback (up to four threads with cross-origin isolation), exact 7680-point FFT, 44.1 kHz stereo, fixed model tensor, two-pass denoise and overlap-add. All DSP runs in a dedicated Worker; browser decoding precedes the Worker.
-- FFmpeg MP4 export with H.264, AAC 48 kHz, 30 fps, even dimensions, `yuv420p`, fast-start, 20 Mbps video cap and preserved captions as separate text downloads.
+- FFmpeg MP4 export with H.264, AAC 48 kHz, 30 fps, even dimensions, `yuv420p`, fast-start, 20 Mbps video cap and preserved captions as separate text downloads. 1080p or 720p output quality.
+- On-device export (WebCodecs, via `mediabunny`): renders crop, background, text overlays, trim and original/instrument-removal audio entirely in the browser using the same canvas compositing as the live preview, skipping the server's FFmpeg job. Unsupported browsers or audio modes other than original/instrument-removal fall back to the server path. The server accepts the finished file as-is (probe + thumbnail only, no re-encode).
 - Export library with playback, full caption preview, a top Copy caption button with success feedback, video/caption downloads and deletion. Empty captions disable copying; blocked clipboard access selects the text for manual copying. Source/project stay intact when deleting an export.
 
 Source imports are converted to a high-quality H.264 editing copy (CRF 18). This is not a bit-for-bit copy of the platform's original file. Export is another encode. Instagram upload acceptance has not been tested against a real account.

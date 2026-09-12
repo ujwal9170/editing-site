@@ -1,5 +1,13 @@
 export default {
   poweredByHeader: false,
+  experimental: {
+    // Next.js's own proxy layer (used for the /api/* rewrite below) buffers
+    // request bodies independently of the Fastify backend's own bodyLimit
+    // settings, capped at 10MB by default -- silently, with no error to the
+    // client, just a truncated body. Media uploads (up to 300MB) and
+    // device-rendered exports both exceed that by far.
+    proxyClientMaxBodySize: "320mb",
+  },
   async rewrites() {
     return [
       {

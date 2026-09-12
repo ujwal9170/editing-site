@@ -460,6 +460,7 @@ export async function createApp({
       const data = z
         .object({
           revision: z.number().int(),
+          quality: z.enum(["1080p", "720p"]).default("1080p"),
           background: z.string().max(ARTWORK_MAX_CHARS),
           overlays: z
             .array(
@@ -539,6 +540,7 @@ export async function createApp({
           id,
           input: media.file,
           spec,
+          quality: data.quality,
           audioFile,
           background: backgroundFile,
           overlays,
@@ -550,6 +552,7 @@ export async function createApp({
             name: project.name,
             caption: project.caption,
             edit: spec,
+            quality: data.quality,
             expiresAt: Date.now() + ttl,
             ...result,
           });
@@ -557,6 +560,62 @@ export async function createApp({
           return id;
         },
         clean,
+      );
+      return reply.code(202).send({ job });
+    }),
+  );
+  app.post(
+    "/api/projects/:id/renders/device",
+    { bodyLimit: 320 * 1024 * 1024 },
+    projectOperation(async (req, reply) => {
+      const project = get("project", req.params.id),
+        media = mediaReady(project.mediaId);
+      const spec = validateEdit(project.edit, media.duration * 1000);
+      const enabledDuration = spec.segments
+        .filter((s) => s.enabled)
+        .reduce((t, s) => t + s.endMs - s.startMs, 0);
+      if (enabledDuration < 3000)
+        throw new Error("Keep at least 3 seconds for the Instagram export.");
+      if (!["original", "vocals-only"].includes(spec.audio.mode))
+        throw new Error(
+          "On-device export only supports original audio or instrument removal.",
+        );
+      if (spec.audio.mode === "vocals-only") {
+        const audio = get("audio", spec.audio.derivativeId);
+        if (audio.projectId !== project.id || audio.status !== "ready")
+          throw new Error("Apply processed audio first.");
+      }
+      if (Number(req.query.revision) !== project.revision)
+        throw new Error("Save the latest edit before exporting.");
+      const quality = z.enum(["1080p", "720p"]).parse(req.query.quality);
+      const file = await upload(req, ".device-export");
+      const id = randomUUID();
+      const job = queue.add(
+        "accept",
+        {
+          action: "accept",
+          projectId: project.id,
+          mediaId: media.id,
+          root,
+          id,
+          input: file.name,
+          expectedDuration: enabledDuration / 1000,
+        },
+        async (result) => {
+          repo.put("export", {
+            id,
+            projectId: project.id,
+            name: project.name,
+            caption: project.caption,
+            edit: spec,
+            quality,
+            renderedOnDevice: true,
+            expiresAt: Date.now() + ttl,
+            ...result,
+          });
+          return id;
+        },
+        () => rm(path.join(root, file.name), { force: true }),
       );
       return reply.code(202).send({ job });
     }),

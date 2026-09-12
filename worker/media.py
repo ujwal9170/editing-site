@@ -125,6 +125,23 @@ def audio(job, root):
     return {'file': target.name, 'duration': info['duration'], 'size': target.stat().st_size}
 
 
+def accept(job, root):
+    # On-device export: the browser already encoded the final MP4 (WebCodecs),
+    # so this just validates and registers it -- no FFmpeg re-encode, which is
+    # the whole point of rendering on the user's device instead of the server.
+    source = root / job['input']
+    info = probe(source)
+    if not info['width']:
+        raise ValueError('This file does not contain a video stream.')
+    if abs(info['duration'] - job['expectedDuration']) > 1.0:
+        raise ValueError('Exported video duration does not match the edited timeline.')
+    target = root / (job['id'] + '.mp4')
+    source.rename(target)
+    thumb = root / (job['id'] + '.jpg')
+    thumbnail(target, thumb)
+    return {**info, 'file': target.name, 'thumbnail': thumb.name, 'size': target.stat().st_size}
+
+
 def isolate(job, root):
     # Bulk instrument-removal queue: mux the source's own video (stream-copied,
     # zero re-encode) with the browser-isolated vocal track, producing a new
@@ -164,7 +181,7 @@ def render(job, root):
     spec = job['spec']
     if spec['canvas']['aspectRatio'] != '9:16':
         raise ValueError('Only the 9:16 Reel format is supported.')
-    width, height = 1080, 1920
+    width, height = (720, 1280) if job.get('quality') == '720p' else (1080, 1920)
     source = root / job['input']
     info = probe(source)
     args = ['-i', str(source)]
@@ -219,7 +236,7 @@ def execute(job):
     with redirect_stdout(sys.stderr):
         root = Path(job['root']).resolve()
         action = job['action']
-        result = import_media(job, root) if action in ['download', 'import'] else audio(job, root) if action == 'audio' else isolate(job, root) if action == 'isolate' else render(job, root)
+        result = import_media(job, root) if action in ['download', 'import'] else audio(job, root) if action == 'audio' else isolate(job, root) if action == 'isolate' else accept(job, root) if action == 'accept' else render(job, root)
     print(json.dumps(result))
 
 
