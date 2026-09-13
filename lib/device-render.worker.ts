@@ -77,7 +77,7 @@ self.onmessage = async ({ data }: MessageEvent<RenderRequest & { artwork: Render
         const time = times.next().value!;
         if (!frame) throw new Error("A source frame could not be decoded. Try an updated browser or a supported source.");
         ctx.drawImage(data.artwork.background, 0, 0);
-        ctx.drawImage(frame.canvas, (width - geometry.drawWidth) / 2, (height - geometry.drawHeight) / 2);
+        ctx.drawImage(frame.canvas, geometry.drawX, geometry.drawY);
         for (const overlay of data.artwork.overlays) {
           if (time.sourceTime * 1000 >= overlay.startMs && time.sourceTime * 1000 <= overlay.endMs)
             ctx.drawImage(overlay.image, overlay.x, overlay.y);

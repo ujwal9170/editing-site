@@ -1,5 +1,7 @@
 "use client";
 import { useEffect, useRef, useState } from "react";
+import type { PointerEvent as ReactPointerEvent, RefObject } from "react";
+import Slider from "@/components/Slider";
 import {
   Play,
   Pause,
@@ -20,6 +22,9 @@ import {
   ChevronLeft,
   Smartphone,
   X,
+  Grid3x3,
+  RotateCcw,
+  Check,
 } from "lucide-react";
 import { api, fileUrl, clock, awaitJob } from "@/lib/api";
 import {
@@ -28,6 +33,10 @@ import {
   textColors,
   bgColors,
   dimensions,
+  clampCrop,
+  MIN_CROP,
+  measureOverlay,
+  type Crop as CropRect,
 } from "@/lib/canvas";
 import type { Edit, Overlay, Project } from "@/lib/types";
 import type { ExportTask } from "@/lib/useDeviceExports";
@@ -66,10 +75,19 @@ export default function Editor({
     [quality, setQuality] = useState<"1080p" | "720p">("1080p"),
     [exportMenuOpen, setExportMenuOpen] = useState(false),
     [sheetOpen, setSheetOpen] = useState(false),
-    [deviceSupported, setDeviceSupported] = useState(false);
+    [deviceSupported, setDeviceSupported] = useState(false),
+    [freehand, setFreehand] = useState(false),
+    [liveCrop, setLiveCrop] = useState<CropRect | null>(null),
+    [liveTextPos, setLiveTextPos] = useState<{
+      id: string;
+      x: number;
+      y: number;
+    } | null>(null),
+    [selectedTextId, setSelectedTextId] = useState<string | null>(null);
   const video = useRef<HTMLVideoElement>(null),
     derived = useRef<HTMLAudioElement>(null),
     canvas = useRef<HTMLCanvasElement>(null),
+    textFrame = useRef<HTMLDivElement>(null),
     current = useRef(edit),
     revision = useRef(initial.revision),
     saveChain = useRef<Promise<any>>(Promise.resolve()),
@@ -125,6 +143,16 @@ export default function Editor({
     setFuture([]);
     setEdit(next);
   }
+  // Leaving Free hand (Done, closing the sheet, switching tools) must never
+  // silently drop a drag that was still in flight -- flush whatever was last
+  // on screen into the real edit first, so what you saw is what you get.
+  function exitFreehand() {
+    setLiveCrop((c) => {
+      if (c) change({ ...edit, crop: c });
+      return null;
+    });
+    setFreehand(false);
+  }
   function updateOverlay(id: string, changes: Partial<Overlay>) {
     change({
       ...edit,
@@ -132,6 +160,36 @@ export default function Editor({
         t.id === id ? { ...t, ...changes } : t,
       ),
     });
+  }
+  function removeOverlay(id: string) {
+    change({
+      ...edit,
+      textOverlays: edit.textOverlays.filter((t) => t.id !== id),
+    });
+    setSelectedTextId((s) => (s === id ? null : s));
+  }
+  // Tapping a text's on-canvas handle selects it and brings its card into
+  // view in the (short, scrollable) panel, so you don't have to go hunting
+  // for the right one among several.
+  function selectOverlay(id: string) {
+    setSelectedTextId(id);
+    document
+      .querySelector(`[data-overlay-card="${id}"]`)
+      ?.scrollIntoView({ block: "nearest", behavior: "smooth" });
+  }
+  // The drag handle's size in canvas fractions, from the text's *actual*
+  // measured footprint -- not a guess -- so grabbing it feels like grabbing
+  // the rendered text rather than some arbitrary box near it. Measured on
+  // the live preview canvas itself (not a fresh offscreen one) so the font
+  // is guaranteed already loaded -- it's been drawing text every frame --
+  // rather than risking a fallback-font measurement that doesn't match
+  // what's actually on screen.
+  function overlayBoxFraction(t: Overlay) {
+    const [cw, ch] = dimensions(edit.canvas.aspectRatio);
+    const ctx = canvas.current?.getContext("2d");
+    if (!ctx) return { width: 0.3, height: 0.08 };
+    const { width, height } = measureOverlay(ctx, t, cw, ch);
+    return { width: width / cw, height: height / ch };
   }
   function save(snapshot = { edit, name, caption }) {
     setSaving("Saving…");
@@ -250,18 +308,6 @@ export default function Editor({
       ],
     });
     setSelected(i + 1);
-  }
-  function preset() {
-    const [w, h] = dimensions("9:16"),
-      target = w / h,
-      source = media.width / media.height;
-    const width = target < source ? target / source : 1,
-      height = target > source ? source / target : 1;
-    change({
-      ...edit,
-      canvas: { ...edit.canvas, aspectRatio: "9:16" },
-      crop: { x: (1 - width) / 2, y: (1 - height) / 2, width, height },
-    });
   }
   async function exportVideo() {
     if (!deviceSupported) {
@@ -421,10 +467,14 @@ export default function Editor({
       <div className="edit-workspace">
         <div className="preview-column">
           <div className="preview-stage">
-            <canvas ref={canvas} aria-label="Edited video preview" />
+            <canvas
+              ref={canvas}
+              aria-label="Edited video preview"
+              style={freehand ? { display: "none" } : undefined}
+            />
             <video
               ref={video}
-              className="source-video"
+              className={`source-video${freehand ? " source-video-visible" : ""}`}
               src={fileUrl("media", media.id)}
               muted={edit.audio.mode !== "original"}
               playsInline
@@ -441,6 +491,69 @@ export default function Editor({
                 src={fileUrl("audio", edit.audio.derivativeId)}
                 muted={["mute", "original"].includes(edit.audio.mode)}
               />
+            )}
+            {freehand && (
+              <CropOverlay
+                crop={liveCrop ?? edit.crop}
+                sourceWidth={media.width}
+                sourceHeight={media.height}
+                onChange={setLiveCrop}
+                onCommit={() => {
+                  setLiveCrop((c) => {
+                    if (c) change({ ...edit, crop: c });
+                    return null;
+                  });
+                }}
+              />
+            )}
+            {tab === "text" && (
+              <div
+                className="text-drag-frame"
+                ref={textFrame}
+                aria-hidden="true"
+                // Always a 9:16 box, matching the canvas's own fixed shape --
+                // without this the frame had no intrinsic size at all and
+                // silently stretched to the whole stage, making every drag
+                // handle read as a fraction of the wrong, larger box.
+                style={{ aspectRatio: "9 / 16" }}
+              >
+                {edit.textOverlays
+                  .filter(
+                    (t) =>
+                      time * 1000 >= t.startMs && time * 1000 <= t.endMs,
+                  )
+                  .map((t) => {
+                    const pos =
+                      liveTextPos?.id === t.id
+                        ? liveTextPos
+                        : { x: t.x, y: t.y };
+                    const box = overlayBoxFraction(t);
+                    return (
+                      <TextDragHandle
+                        key={t.id}
+                        x={pos.x}
+                        y={pos.y}
+                        width={box.width}
+                        height={box.height}
+                        frameRef={textFrame}
+                        selected={selectedTextId === t.id}
+                        onTap={() => selectOverlay(t.id)}
+                        onDelete={() => removeOverlay(t.id)}
+                        onChange={(x, y) =>
+                          setLiveTextPos({ id: t.id, x, y })
+                        }
+                        onCommit={() => {
+                          selectOverlay(t.id);
+                          setLiveTextPos((p) => {
+                            if (p && p.id === t.id)
+                              updateOverlay(t.id, { x: p.x, y: p.y });
+                            return null;
+                          });
+                        }}
+                      />
+                    );
+                  })}
+              </div>
             )}
             <span className="canvas-label">
               {edit.canvas.aspectRatio} ·{" "}
@@ -572,10 +685,19 @@ export default function Editor({
                   // On mobile the same tab acts as a toggle for its sheet,
                   // which is how CapCut/InShot behave; on desktop the panel
                   // is always visible so this only ever switches tabs.
-                  if (tab === key) setSheetOpen((v) => !v);
-                  else {
+                  if (tab === key) {
+                    setSheetOpen((v) => !v);
+                    exitFreehand();
+                    setLiveTextPos(null);
+                    setSelectedTextId(null);
+                  } else {
                     setTab(key);
                     setSheetOpen(true);
+                    if (key !== "crop") exitFreehand();
+                    if (key !== "text") {
+                      setLiveTextPos(null);
+                      setSelectedTextId(null);
+                    }
                   }
                 }}
               >
@@ -590,18 +712,114 @@ export default function Editor({
               <button
                 className="sheet-close"
                 aria-label="Close panel"
-                onClick={() => setSheetOpen(false)}
+                onClick={() => {
+                  setSheetOpen(false);
+                  exitFreehand();
+                  setLiveTextPos(null);
+                  setSelectedTextId(null);
+                }}
               >
                 <X size={20} />
               </button>
             </div>
-            {tab === "crop" && (
+            {tab === "crop" && !freehand && (
               <>
-                <div className="eyebrow">FRAME IT YOUR WAY</div>
-                <h2>Crop & canvas</h2>
-                <p className="hint">Instagram Reel · 9:16 · 1080 × 1920</p>
-                <button className="subtle wide" onClick={preset}>
-                  Fill Reel frame
+                <button
+                  className="primary wide freehand-toggle"
+                  onClick={() => setFreehand(true)}
+                >
+                  <Grid3x3 size={17} /> Free hand crop
+                </button>
+                <hr />
+                {(
+                  ["top", "bottom", "left", "right"] as const
+                ).map((edge) => {
+                  const c = edit.crop;
+                  // Each edge is fully independent: it moves only that one
+                  // side, holding the opposite side's position fixed --
+                  // exactly the same math as dragging that edge in Free
+                  // hand, just as a slider + a typed percent.
+                  // current: how much is already cropped off this edge.
+                  // limit: the most this edge can take before the opposite,
+                  // fixed edge would be closer than MIN_CROP away.
+                  const current =
+                    edge === "left"
+                      ? c.x
+                      : edge === "right"
+                        ? 1 - (c.x + c.width)
+                        : edge === "top"
+                          ? c.y
+                          : 1 - (c.y + c.height);
+                  const limit =
+                    edge === "left"
+                      ? c.x + c.width - MIN_CROP
+                      : edge === "right"
+                        ? 1 - c.x - MIN_CROP
+                        : edge === "top"
+                          ? c.y + c.height - MIN_CROP
+                          : 1 - c.y - MIN_CROP;
+                  const maxPercent = Math.round(Math.max(0, limit) * 100);
+                  const percent = Math.round(current * 100);
+                  const apply = (p: number) => {
+                    const v = Math.min(maxPercent, Math.max(0, p)) / 100;
+                    let crop = { ...c };
+                    if (edge === "left") {
+                      crop.width = c.x + c.width - v;
+                      crop.x = v;
+                    } else if (edge === "right") {
+                      crop.width = 1 - v - c.x;
+                    } else if (edge === "top") {
+                      crop.height = c.y + c.height - v;
+                      crop.y = v;
+                    } else {
+                      crop.height = 1 - v - c.y;
+                    }
+                    change({ ...edit, crop: clampCrop(crop) });
+                  };
+                  const label = edge[0].toUpperCase() + edge.slice(1);
+                  return (
+                    <label key={edge}>
+                      {label}
+                      <div className="crop-axis-row">
+                        <Slider
+                          ariaLabel={`${label} crop percent`}
+                          min={0}
+                          max={maxPercent}
+                          step={1}
+                          value={percent}
+                          onChange={apply}
+                        />
+                        <span className="crop-axis-value">
+                          <input
+                            type="number"
+                            aria-label={`${label} crop percent`}
+                            min={0}
+                            max={maxPercent}
+                            value={percent}
+                            onChange={(e) => apply(Number(e.target.value))}
+                          />
+                          %
+                        </span>
+                      </div>
+                    </label>
+                  );
+                })}
+                <p className="hint">
+                  Each side crops on its own. Free hand below does the same
+                  thing by dragging directly on the video.
+                </p>
+              </>
+            )}
+            {tab === "crop" && freehand && (
+              <>
+                <div className="eyebrow">FREE HAND CROP</div>
+                <h2>Drag any edge</h2>
+                <p className="hint">
+                  Touch an edge or corner on the video and drag to crop from
+                  that side.
+                </p>
+                <button className="primary wide" onClick={exitFreehand}>
+                  <Check size={16} /> Done
                 </button>
                 <button
                   className="subtle wide"
@@ -612,47 +830,8 @@ export default function Editor({
                     })
                   }
                 >
-                  Fit full video
+                  <RotateCcw size={15} /> Reset crop
                 </button>
-                <hr />
-                {(["width", "height", "x", "y"] as const).map((key) => (
-                  <label key={key}>
-                    {
-                      {
-                        width: "Crop width",
-                        height: "Crop height",
-                        x: "Horizontal position",
-                        y: "Vertical position",
-                      }[key]
-                    }
-                    <input
-                      type="range"
-                      min={key === "width" || key === "height" ? 0.05 : 0}
-                      max={
-                        key === "x"
-                          ? 1 - edit.crop.width
-                          : key === "y"
-                            ? 1 - edit.crop.height
-                            : 1
-                      }
-                      step="0.005"
-                      value={edit.crop[key]}
-                      onChange={(e) => {
-                        const crop = {
-                          ...edit.crop,
-                          [key]: Number(e.target.value),
-                        };
-                        crop.x = Math.min(crop.x, 1 - crop.width);
-                        crop.y = Math.min(crop.y, 1 - crop.height);
-                        change({ ...edit, crop });
-                      }}
-                    />
-                  </label>
-                ))}
-                <p className="hint">
-                  Your cropped video fits inside the selected canvas. Any space
-                  around it uses your background.
-                </p>
               </>
             )}
             {tab === "background" && (
@@ -741,20 +920,17 @@ export default function Editor({
                   <>
                     <label>
                       Angle · {edit.canvas.background.angle}°
-                      <input
-                        type="range"
-                        min="0"
-                        max="360"
+                      <Slider
+                        ariaLabel="Gradient angle"
+                        min={0}
+                        max={360}
                         value={edit.canvas.background.angle}
-                        onChange={(e) =>
+                        onChange={(angle) =>
                           change({
                             ...edit,
                             canvas: {
                               ...edit.canvas,
-                              background: {
-                                ...edit.canvas.background,
-                                angle: Number(e.target.value),
-                              },
+                              background: { ...edit.canvas.background, angle },
                             },
                           })
                         }
@@ -818,7 +994,12 @@ export default function Editor({
                   <Plus size={16} /> Add text
                 </button>
                 {edit.textOverlays.map((t) => (
-                  <div className="text-card" key={t.id}>
+                  <div
+                    className={`text-card${selectedTextId === t.id ? " selected" : ""}`}
+                    key={t.id}
+                    data-overlay-card={t.id}
+                    onFocusCapture={() => setSelectedTextId(t.id)}
+                  >
                     <label>
                       Text
                       <textarea
@@ -861,17 +1042,13 @@ export default function Editor({
                     ].map(([key, label, min, max]) => (
                       <label key={key}>
                         {label}
-                        <input
-                          type="range"
-                          min={min}
-                          max={max}
+                        <Slider
+                          ariaLabel={`${label} for this text`}
+                          min={Number(min)}
+                          max={Number(max)}
                           step={key === "size" ? 1 : 0.01}
                           value={t[key as "size" | "x" | "y"]}
-                          onChange={(e) =>
-                            updateOverlay(t.id, {
-                              [key]: Number(e.target.value),
-                            })
-                          }
+                          onChange={(v) => updateOverlay(t.id, { [key]: v })}
                         />
                       </label>
                     ))}
@@ -909,14 +1086,7 @@ export default function Editor({
                     </div>
                     <button
                       className="subtle"
-                      onClick={() =>
-                        change({
-                          ...edit,
-                          textOverlays: edit.textOverlays.filter(
-                            (x) => x.id !== t.id,
-                          ),
-                        })
-                      }
+                      onClick={() => removeOverlay(t.id)}
                     >
                       <Trash2 size={14} /> Remove text
                     </button>
@@ -1053,5 +1223,216 @@ function FilmStrip() {
     <span className="film-strip" aria-hidden="true">
       ▥
     </span>
+  );
+}
+type DragHandle = "t" | "b" | "l" | "r" | "tl" | "tr" | "bl" | "br";
+// Freehand crop: a border with edge and corner handles laid directly over the
+// full source frame. Dragging updates a live value on every pointermove but
+// only commits one undo step, on release -- otherwise a single drag gesture
+// would flood the undo stack with hundreds of intermediate crops.
+function CropOverlay({
+  crop,
+  sourceWidth,
+  sourceHeight,
+  onChange,
+  onCommit,
+}: {
+  crop: CropRect;
+  sourceWidth: number;
+  sourceHeight: number;
+  onChange: (crop: CropRect) => void;
+  onCommit: () => void;
+}) {
+  // This wrapper is given the source's own aspect ratio and the same
+  // max-width/max-height as the visible <video>, so it always lands exactly
+  // on the letterboxed video content -- no manual object-fit math needed.
+  const box = useRef<HTMLDivElement>(null);
+  const drag = useRef<{
+    handle: DragHandle;
+    startX: number;
+    startY: number;
+    start: CropRect;
+    width: number;
+    height: number;
+  } | null>(null);
+  function down(handle: DragHandle) {
+    return (e: ReactPointerEvent) => {
+      e.preventDefault();
+      e.stopPropagation();
+      e.currentTarget.setPointerCapture(e.pointerId);
+      const rect = box.current?.getBoundingClientRect();
+      if (!rect) return;
+      drag.current = {
+        handle,
+        startX: e.clientX,
+        startY: e.clientY,
+        start: crop,
+        width: rect.width,
+        height: rect.height,
+      };
+    };
+  }
+  function move(e: ReactPointerEvent) {
+    const d = drag.current;
+    if (!d) return;
+    const dx = (e.clientX - d.startX) / d.width,
+      dy = (e.clientY - d.startY) / d.height;
+    let { x, y, width, height } = d.start;
+    if (d.handle.includes("l")) {
+      x += dx;
+      width -= dx;
+    }
+    if (d.handle.includes("r")) width += dx;
+    if (d.handle.includes("t")) {
+      y += dy;
+      height -= dy;
+    }
+    if (d.handle.includes("b")) height += dy;
+    onChange(clampCrop({ x, y, width, height }));
+  }
+  function up() {
+    if (drag.current) onCommit();
+    drag.current = null;
+  }
+  const handles: DragHandle[] = ["t", "b", "l", "r", "tl", "tr", "bl", "br"];
+  return (
+    <div
+      className="crop-overlay"
+      ref={box}
+      aria-hidden="true"
+      style={
+        sourceWidth && sourceHeight
+          ? { aspectRatio: `${sourceWidth} / ${sourceHeight}` }
+          : undefined
+      }
+    >
+      <div
+        className="crop-frame"
+        style={{
+          left: `${crop.x * 100}%`,
+          top: `${crop.y * 100}%`,
+          width: `${crop.width * 100}%`,
+          height: `${crop.height * 100}%`,
+        }}
+      >
+        <span className="crop-grid-line v" style={{ left: "33.333%" }} />
+        <span className="crop-grid-line v" style={{ left: "66.666%" }} />
+        <span className="crop-grid-line h" style={{ top: "33.333%" }} />
+        <span className="crop-grid-line h" style={{ top: "66.666%" }} />
+        {handles.map((h) => (
+          <span
+            key={h}
+            className={`crop-handle crop-handle-${h}`}
+            onPointerDown={down(h)}
+            onPointerMove={move}
+            onPointerUp={up}
+            onPointerCancel={up}
+          />
+        ))}
+      </div>
+    </div>
+  );
+}
+// A text overlay's position, draggable directly on the preview. Position
+// only, on purpose -- x/y move together as one drag, nothing else changes
+// (no resize, no rotate) so a drag can never do more than reposition it. A
+// tap that never moves past the threshold selects the text (so its card
+// scrolls into view in the panel) instead of "dragging" it by zero.
+const TAP_THRESHOLD = 4;
+function TextDragHandle({
+  x,
+  y,
+  width,
+  height,
+  frameRef,
+  selected,
+  onTap,
+  onDelete,
+  onChange,
+  onCommit,
+}: {
+  x: number;
+  y: number;
+  width: number;
+  height: number;
+  frameRef: RefObject<HTMLDivElement | null>;
+  selected: boolean;
+  onTap: () => void;
+  onDelete: () => void;
+  onChange: (x: number, y: number) => void;
+  onCommit: () => void;
+}) {
+  const drag = useRef<{
+    startX: number;
+    startY: number;
+    startVX: number;
+    startVY: number;
+    boxWidth: number;
+    boxHeight: number;
+    moved: boolean;
+  } | null>(null);
+  function down(e: ReactPointerEvent<HTMLDivElement>) {
+    e.preventDefault();
+    e.currentTarget.setPointerCapture(e.pointerId);
+    const rect = frameRef.current?.getBoundingClientRect();
+    if (!rect) return;
+    drag.current = {
+      startX: e.clientX,
+      startY: e.clientY,
+      startVX: x,
+      startVY: y,
+      boxWidth: rect.width,
+      boxHeight: rect.height,
+      moved: false,
+    };
+  }
+  function move(e: ReactPointerEvent<HTMLDivElement>) {
+    const d = drag.current;
+    if (!d || d.boxWidth <= 0 || d.boxHeight <= 0) return;
+    const pixelDx = e.clientX - d.startX,
+      pixelDy = e.clientY - d.startY;
+    if (
+      !d.moved &&
+      Math.abs(pixelDx) < TAP_THRESHOLD &&
+      Math.abs(pixelDy) < TAP_THRESHOLD
+    )
+      return;
+    d.moved = true;
+    onChange(
+      Math.min(1, Math.max(0, d.startVX + pixelDx / d.boxWidth)),
+      Math.min(1, Math.max(0, d.startVY + pixelDy / d.boxHeight)),
+    );
+  }
+  function up() {
+    if (drag.current?.moved) onCommit();
+    else if (drag.current) onTap();
+    drag.current = null;
+  }
+  return (
+    <div
+      className={`text-drag-handle${selected ? " selected" : ""}`}
+      style={{
+        left: `${x * 100}%`,
+        top: `${y * 100}%`,
+        width: `${width * 100}%`,
+        height: `${height * 100}%`,
+      }}
+      onPointerDown={down}
+      onPointerMove={move}
+      onPointerUp={up}
+      onPointerCancel={up}
+    >
+      <button
+        className="text-drag-delete"
+        aria-label="Delete this text"
+        onPointerDown={(e) => e.stopPropagation()}
+        onClick={(e) => {
+          e.stopPropagation();
+          onDelete();
+        }}
+      >
+        <Trash2 size={12} />
+      </button>
+    </div>
   );
 }

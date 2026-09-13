@@ -33,8 +33,12 @@ export function cropGeometry(crop, sourceWidth, sourceHeight, width, height) {
   const sh = Math.max(2, Math.floor(sourceHeight * crop.height / 2) * 2);
   const left = Math.max(0, Math.min(sourceWidth - sw, Math.floor(sourceWidth * crop.x / 2) * 2));
   const top = Math.max(0, Math.min(sourceHeight - sh, Math.floor(sourceHeight * crop.y / 2) * 2));
-  const scale = Math.min(width / sw, height / sh);
+  // Match the latest stable-window crop: fit the full source, then hide its
+  // cropped edges without enlarging or re-centering the remaining pixels.
+  const scale = Math.min(width / sourceWidth, height / sourceHeight);
   return { left, top, width: sw, height: sh,
+    drawX: (width - sourceWidth * scale) / 2 + left * scale,
+    drawY: (height - sourceHeight * scale) / 2 + top * scale,
     drawWidth: Math.max(2, Math.floor(sw * scale / 2) * 2),
     drawHeight: Math.max(2, Math.floor(sh * scale / 2) * 2) };
 }
