@@ -2,6 +2,8 @@
 import io
 import json
 import unittest
+import tempfile
+from types import SimpleNamespace
 from pathlib import Path
 from contextlib import redirect_stdout, redirect_stderr
 from unittest.mock import patch
@@ -79,6 +81,30 @@ class OverlayCompositingTests(unittest.TestCase):
 
     def test_a_project_without_overlays_leaves_the_base_untouched(self):
         self.assertEqual(media.overlay_filters([]), ([], 'base0'))
+
+
+class DeviceAcceptTests(unittest.TestCase):
+    def test_probe_recognizes_mp4_h264_aac(self):
+        stderr = "Input #0, mov,mp4,m4a,3gp,3g2,mj2, from 'x':\nDuration: 00:00:04.00\nStream #0:0: Video: h264 (High), yuv420p, 720x1280, 30 fps\nStream #0:1: Audio: aac (LC), 48000 Hz"
+        with patch.object(media.subprocess, 'run', return_value=SimpleNamespace(stderr=stderr)):
+            info = media.probe('x')
+        self.assertTrue(info['mp4'] and info['h264'] and info['aac'])
+
+    def test_device_accept_checks_format_and_never_reencodes(self):
+        with tempfile.TemporaryDirectory(prefix='frame-device-') as folder:
+            root = Path(folder)
+            source = root / 'input.device-export'
+            source.write_bytes(b'test-only')
+            job = {'input': source.name, 'id': 'output', 'quality': '720p', 'expectedDuration': 4}
+            info = {'duration': 4, 'width': 720, 'height': 1280, 'mp4': True, 'h264': True, 'hasAudio': True, 'aac': True}
+            for change in [{'h264': False}, {'aac': False}, {'mp4': False}, {'width': 1080}, {'duration': 9}]:
+                with patch.object(media, 'probe', return_value={**info, **change}):
+                    with self.assertRaises(ValueError): media.accept(job, root)
+                self.assertTrue(source.exists())
+            with patch.object(media, 'probe', return_value=info), patch.object(media, 'thumbnail'), patch.object(media, 'normalize') as normalize:
+                result = media.accept(job, root)
+                normalize.assert_not_called()
+            self.assertEqual((root / result['file']).read_bytes(), b'test-only')
 
 
 if __name__ == '__main__':

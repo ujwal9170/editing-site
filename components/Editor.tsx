@@ -231,7 +231,7 @@ export default function Editor({
   }, [edit, name, caption]); // Serialized saves prevent overlapping revision writes.
   useEffect(() => {
     let frame: number;
-    let lastEdit: Edit | null = null, lastTime = -1, lastDraw = 0;
+    let lastEdit: Edit | null = null, lastTime = -1, lastDraw = 0, lastReady = -1;
     const draw = () => {
       const v = video.current,
         ctx = canvas.current?.getContext("2d");
@@ -255,11 +255,12 @@ export default function Editor({
           }
         }
         const now = performance.now();
-        if (now - lastDraw >= 32 && (lastEdit !== current.current || lastTime !== v.currentTime || v.readyState < 2)) {
+        if (now - lastDraw >= 32 && (lastEdit !== current.current || lastTime !== v.currentTime || lastReady !== v.readyState)) {
           preview(ctx, v, current.current);
           lastDraw = now;
           lastEdit = current.current;
           lastTime = v.currentTime;
+          lastReady = v.readyState;
         }
       }
       frame = requestAnimationFrame(draw);
@@ -444,7 +445,7 @@ export default function Editor({
                     type="radio"
                     name="quality"
                     checked={quality === "1080p"}
-                    onChange={() => setQuality("1080p")}
+                    onChange={() => { setQuality("1080p"); setExportMenuOpen(false); }}
                   />
                   1080p
                 </label>
@@ -453,7 +454,7 @@ export default function Editor({
                     type="radio"
                     name="quality"
                     checked={quality === "720p"}
-                    onChange={() => setQuality("720p")}
+                    onChange={() => { setQuality("720p"); setExportMenuOpen(false); }}
                   />
                   720p
                 </label>

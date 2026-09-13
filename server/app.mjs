@@ -68,15 +68,8 @@ export async function createApp({
   // One-time migration: exports made before auto-expiry existed get a fresh
   // retention window starting now, rather than being exempt forever.
   for (const item of repo.list("export"))
-    if (!item.expiresAt) repo.put("export", { ...item, expiresAt: Date.now() + ttl });
-  // An image background or image overlay rasterizes to a full 1080x1920 PNG,
-  // and base64 adds a third on top (~11 MB for a worst-case frame). These
-  // ceilings leave room for that; ARTWORK_BUDGET keeps the combined payload
-  // under the route's body limit so oversized artwork fails with a readable
-  // message instead of a transport-level 413.
-  const ARTWORK_MAX_CHARS = 12_000_000;
-  const ARTWORK_BUDGET = 56_000_000;
-  const ARTWORK_BODY_LIMIT = 64 * 1024 * 1024;
+    if (!item.expiresAt)
+      repo.put("export", { ...item, expiresAt: Date.now() + ttl });
   const sessions = new Map(),
     attempts = new Map();
   let authenticating = 0;
@@ -148,7 +141,9 @@ export async function createApp({
     return user;
   }
   function sessionToken(req) {
-    return /(?:^|;\s*)studio_session=([^;]+)/.exec(req.headers.cookie || "")?.[1];
+    return /(?:^|;\s*)studio_session=([^;]+)/.exec(
+      req.headers.cookie || "",
+    )?.[1];
   }
   function currentSession(req) {
     const token = sessionToken(req);
@@ -200,11 +195,20 @@ export async function createApp({
     };
   });
   app.post("/api/auth", async (req, reply) => {
-    const credentials = z.object({ username: z.string().trim().min(3).max(32), password: z.string().max(200) }).parse(req.body);
+    const credentials = z
+      .object({
+        username: z.string().trim().min(3).max(32),
+        password: z.string().max(200),
+      })
+      .parse(req.body);
     // Next proxies every employee through loopback. Do not trust a client-supplied
     // forwarded IP, or count successful team logins against that shared address.
     const key = credentials.username.toLowerCase();
-    const a = attempts.get(key) || { count: 0, pending: 0, until: Date.now() + 60_000 };
+    const a = attempts.get(key) || {
+      count: 0,
+      pending: 0,
+      until: Date.now() + 60_000,
+    };
     if (a.until < Date.now()) {
       a.count = 0;
       a.until = Date.now() + 60_000;
@@ -218,7 +222,11 @@ export async function createApp({
     authenticating++;
     let user;
     try {
-      user = await authenticate(repo, credentials.username, credentials.password);
+      user = await authenticate(
+        repo,
+        credentials.username,
+        credentials.password,
+      );
       if (!user) a.count++;
       else a.count = 0;
     } finally {
@@ -314,20 +322,25 @@ export async function createApp({
     if (!target)
       throw Object.assign(new Error("Not found"), { statusCode: 404 });
     if (target.id === actor.id)
-      throw Object.assign(
-        new Error("You cannot remove your own account."),
-        { statusCode: 409 },
-      );
+      throw Object.assign(new Error("You cannot remove your own account."), {
+        statusCode: 409,
+      });
     if (isAdmin(target) && admins(repo).length <= 1)
-      throw Object.assign(
-        new Error("That is the only admin account."),
-        { statusCode: 409 },
-      );
+      throw Object.assign(new Error("That is the only admin account."), {
+        statusCode: 409,
+      });
     const deleteContent = req.query.deleteContent === "true";
     let removed = 0;
     if (deleteContent) {
       const owned = [];
-      for (const kind of ["media", "project", "export", "audio", "job", "deviceExport"])
+      for (const kind of [
+        "media",
+        "project",
+        "export",
+        "audio",
+        "job",
+        "deviceExport",
+      ])
         for (const item of repo.list(kind))
           if (item.userId === target.id) owned.push({ kind, ...item });
       removed = owned.length;
@@ -503,7 +516,9 @@ export async function createApp({
   function projectBusy(id) {
     return (
       preparingProjects.has(id) ||
-      repo.list("deviceExport").some(t => t.projectId === id && t.expiresAt > Date.now()) ||
+      repo
+        .list("deviceExport")
+        .some((t) => t.projectId === id && t.expiresAt > Date.now()) ||
       repo
         .list("job")
         .some(
@@ -635,33 +650,56 @@ export async function createApp({
   );
   // Rendering is device-only. Retire the old CPU-heavy endpoint explicitly.
   app.post("/api/projects/:id/renders", (req, reply) =>
-    reply.code(410).send({ error: "Server rendering is disabled. Export on this device." }),
+    reply
+      .code(410)
+      .send({ error: "Server rendering is disabled. Export on this device." }),
   );
   app.post("/api/projects/:id/renders/device/prepare", (req) => {
     const project = get("project", req.params.id, req);
     const media = mediaReady(project.mediaId, req);
-    const data = z.object({ revision: z.number().int(), quality: z.enum(["720p", "1080p"]) }).parse(req.body);
-    if (data.revision !== project.revision) throw new Error("Save the latest edit before exporting.");
+    const data = z
+      .object({
+        revision: z.number().int(),
+        quality: z.enum(["720p", "1080p"]),
+      })
+      .parse(req.body);
+    if (data.revision !== project.revision)
+      throw new Error("Save the latest edit before exporting.");
     const spec = validateEdit(project.edit, media.duration * 1000);
-    const duration = spec.segments.filter(s => s.enabled).reduce((n,s) => n+s.endMs-s.startMs, 0)/1000;
+    const duration =
+      spec.segments
+        .filter((s) => s.enabled)
+        .reduce((n, s) => n + s.endMs - s.startMs, 0) / 1000;
     if (duration < 3) throw new Error("Keep at least 3 seconds for export.");
     if (["vocals-only", "remove-vocals"].includes(spec.audio.mode)) {
       const audio = get("audio", spec.audio.derivativeId, req);
-      if (audio.projectId !== project.id || audio.status !== "ready") throw new Error("Apply processed audio first.");
+      if (audio.projectId !== project.id || audio.status !== "ready")
+        throw new Error("Apply processed audio first.");
     }
-    if (mine("deviceExport", req).filter(t => t.expiresAt > Date.now()).length >= 10)
-      throw new Error("Finish or cancel existing device exports first (maximum 10).");
+    if (
+      mine("deviceExport", req).filter((t) => t.expiresAt > Date.now())
+        .length >= 10
+    )
+      throw new Error(
+        "Finish or cancel existing device exports first (maximum 10).",
+      );
     // The immutable server-side snapshot survives subsequent autosaves. Never
     // trust a browser-supplied caption/edit to describe an unrelated MP4.
     const ticket = repo.put("deviceExport", {
-      userId: req.userId, projectId: project.id, project: { ...project, edit: spec },
-      quality: data.quality, duration, expiresAt: Date.now() + 24 * 3600_000, status: "pending",
+      userId: req.userId,
+      projectId: project.id,
+      project: { ...project, edit: spec },
+      quality: data.quality,
+      duration,
+      expiresAt: Date.now() + 24 * 3600_000,
+      status: "pending",
     });
     return { ticketId: ticket.id };
   });
   app.delete("/api/device-exports/:id", (req, reply) => {
     const ticket = get("deviceExport", req.params.id, req);
-    if (ticket.status !== "pending") return reply.code(409).send({ error: "Already saving the export." });
+    if (ticket.status !== "pending")
+      return reply.code(409).send({ error: "Already saving the export." });
     repo.remove("deviceExport", ticket.id);
     return { ok: true };
   });
@@ -670,35 +708,60 @@ export async function createApp({
     { bodyLimit: 320 * 1024 * 1024 },
     projectOperation(async (req, reply) => {
       const ticket = get("deviceExport", req.query.ticketId, req);
-      if (ticket.projectId !== req.params.id || ticket.expiresAt <= Date.now() || ticket.status !== "pending")
+      if (
+        ticket.projectId !== req.params.id ||
+        ticket.expiresAt <= Date.now() ||
+        ticket.status !== "pending"
+      )
         throw new Error("Export snapshot unavailable. Queue the export again.");
       get("project", ticket.projectId, req);
-      const project = ticket.project, spec = project.edit;
+      const project = ticket.project,
+        spec = project.edit;
       const media = mediaReady(project.mediaId, req);
       // Claim before awaiting upload to reject duplicate submissions.
       repo.put("deviceExport", { ...ticket, status: "uploading" });
       let file;
       try {
         file = await upload(req, ".device-export");
-        if (!currentSession(req)) throw new Error("Account access was revoked.");
+        if (!currentSession(req))
+          throw new Error("Account access was revoked.");
         const id = randomUUID();
-        const job = queue.add("accept", {
-          action: "accept", projectId: project.id, mediaId: media.id,
-          userId: req.userId, root, id, input: file.name,
-          expectedDuration: ticket.duration, quality: ticket.quality,
-        }, async (result) => {
-          if (!repo.get("user", req.userId)) {
-            for (const key of ["file", "thumbnail"])
-              if (result[key]) await rm(path.join(root, result[key]), { force: true });
-            throw new Error("Account was removed.");
-          }
-          repo.put("export", {
-            id, userId: req.userId, projectId: project.id, name: project.name,
-            caption: project.caption, edit: spec, quality: ticket.quality,
-            renderedOnDevice: true, expiresAt: Date.now() + ttl, ...result,
-          });
-          return id;
-        }, () => rm(path.join(root, file.name), { force: true }));
+        const job = queue.add(
+          "accept",
+          {
+            action: "accept",
+            projectId: project.id,
+            mediaId: media.id,
+            userId: req.userId,
+            root,
+            id,
+            input: file.name,
+            expectedDuration: ticket.duration,
+            quality: ticket.quality,
+          },
+          async (result) => {
+            if (!repo.get("user", req.userId)) {
+              for (const key of ["file", "thumbnail"])
+                if (result[key])
+                  await rm(path.join(root, result[key]), { force: true });
+              throw new Error("Account was removed.");
+            }
+            repo.put("export", {
+              id,
+              userId: req.userId,
+              projectId: project.id,
+              name: project.name,
+              caption: project.caption,
+              edit: spec,
+              quality: ticket.quality,
+              renderedOnDevice: true,
+              expiresAt: Date.now() + ttl,
+              ...result,
+            });
+            return id;
+          },
+          () => rm(path.join(root, file.name), { force: true }),
+        );
         return reply.code(202).send({ job });
       } catch (error) {
         if (file) await rm(path.join(root, file.name), { force: true });
@@ -745,7 +808,11 @@ export async function createApp({
       if (
         item.expiresAt < Date.now() &&
         item.status === "ready" &&
-        !repo.list("deviceExport").some(t => t.project.mediaId === item.id && t.expiresAt > Date.now()) &&
+        !repo
+          .list("deviceExport")
+          .some(
+            (t) => t.project.mediaId === item.id && t.expiresAt > Date.now(),
+          ) &&
         !queue.busy
       ) {
         for (const key of ["file", "audioFile", "thumbnail"])
@@ -755,7 +822,8 @@ export async function createApp({
     for (const item of repo.list("export"))
       if (item.expiresAt < Date.now() && !queue.busy) await deleteExport(item);
     for (const ticket of repo.list("deviceExport"))
-      if (ticket.expiresAt <= Date.now()) repo.remove("deviceExport", ticket.id);
+      if (ticket.expiresAt <= Date.now())
+        repo.remove("deviceExport", ticket.id);
     for (const [t, session] of sessions)
       if (session.expires < Date.now()) sessions.delete(t);
     for (const [ip, a] of attempts)

@@ -71,7 +71,7 @@ tests/               Validation, persistence, auth and DSP regressions
 docs/                Target product plan and extension guide
 ```
 
-Edit state is versioned JSON; source files are immutable after import. Background and text artwork use the same canvas functions as the preview, then FFmpeg composites those PNGs before applying timeline cuts. Each overlay is cropped to the pixels it actually draws and composited at that offset, so a text overlay costs a small blend instead of a full 1080×1920 one; text that renders nothing is dropped before it reaches the worker. Vocal separation covers the full source so processed audio stays aligned as clips are removed/restored. Applying a stem uploads it to this application's storage for server rendering, not to an AI service.
+Edit state is versioned JSON; source files are immutable after import. Background and text artwork use the preview's canvas functions and are rasterized once into cropped bitmaps for the device worker. Device export follows the stable-window crop geometry and original source-timeline text timings. Vocal separation covers the full source so processed audio stays aligned as clips are removed/restored. Applied stems are stored by this application, then read by device export; no AI service is involved.
 
 `runtime/` holds SQLite, media, project derivatives and exports. Keep it on persistent storage and back it up. Opening a project refreshes its source's retention. Expired sources make associated projects unavailable until reimport. Exports also expire after the same retention window (`SOURCE_RETENTION_DAYS`, default 7 days) unless deleted sooner.
 
@@ -87,7 +87,7 @@ pnpm build
 node scripts/smoke.mjs
 ```
 
-The smoke check uploads a synthetic six-second stereo clip, verifies range playback, saves crop/overlay/caption edits, tests stale-write rejection, removes the middle two seconds and verifies a four-second 1080×1920 Reel export. Tests also cover FFT/STFT reconstruction. Real musical separation quality should be compared with the user's previously tested Kim Vocal 2 implementation before public release; synthetic tests establish execution/alignment, not perceptual quality.
+The authenticated smoke check prepares a synthetic six-second clip and a four-second cut/text edit, verifies range playback, stale-write rejection, both export snapshot qualities and rejection of server renders. Set SMOKE_USERNAME and SMOKE_PASSWORD for an existing disposable account. Browser verification is separate: test 720p/1080p output, navigation during export and Cancel. Tests also cover FFT/STFT reconstruction; synthetic tests do not establish musical separation quality or iPhone performance.
 
 Multi-platform validation covers supported URL forms, permission checks, platform tagging, queue routing, extractor selection, live/duration limits and the stdout protocol. A public YouTube sample completed a real download and normalization during local verification. The TikTok sample reached its extractor but the host connection timed out; successful TikTok downloading still needs verification on a network that can reach TikTok.
 
