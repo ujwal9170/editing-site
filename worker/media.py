@@ -212,7 +212,20 @@ def render(job, root):
     ch = max(2, int(info['height'] * c['height']) // 2 * 2)
     cx = min(info['width'] - cw, int(info['width'] * c['x']) // 2 * 2)
     cy = min(info['height'] - ch, int(info['height'] * c['y']) // 2 * 2)
-    filters = [f'[0:v]crop={cw}:{ch}:{cx}:{cy},scale={width}:{height}:force_original_aspect_ratio=decrease:force_divisible_by=2,setsar=1,fps=30[video]', f'[1:v]fps=30,setsar=1[bg]', '[bg][video]overlay=(W-w)/2:(H-h)/2:shortest=1[base0]']
+    # Scale/position come from fitting the FULL, uncropped source -- not the
+    # cropped region -- so the crop is a stable window into a frame that
+    # never itself rescales or reflows. Moving one edge only reveals or hides
+    # background at that edge; every untouched edge stays exactly where it
+    # was. Mirrors lib/canvas.ts's compose() exactly, so preview, on-device
+    # export and this server render all agree pixel-for-pixel.
+    scale = min(width / info['width'], height / info['height'])
+    base_x = (width - info['width'] * scale) / 2
+    base_y = (height - info['height'] * scale) / 2
+    dw = max(2, round(cw * scale) // 2 * 2)
+    dh = max(2, round(ch * scale) // 2 * 2)
+    dx = round(base_x + cx * scale)
+    dy = round(base_y + cy * scale)
+    filters = [f'[0:v]crop={cw}:{ch}:{cx}:{cy},scale={dw}:{dh},setsar=1,fps=30[video]', f'[1:v]fps=30,setsar=1[bg]', f'[bg][video]overlay={dx}:{dy}:shortest=1[base0]']
     chain, previous = overlay_filters(overlays)
     filters += chain
     segments = [s for s in spec['segments'] if s['enabled']]

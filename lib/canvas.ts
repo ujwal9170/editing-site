@@ -14,6 +14,20 @@ export function dimensions(
 ): [number, number] {
   return quality === "720p" ? [720, 1280] : [1080, 1920];
 }
+export type Crop = { x: number; y: number; width: number; height: number };
+// Smallest fraction of the source either dimension may keep -- below this a
+// drag handle or a symmetric slider could invert or zero out the crop.
+export const MIN_CROP = 0.08;
+export function clampCrop(crop: Crop): Crop {
+  const width = Math.min(1, Math.max(MIN_CROP, crop.width)),
+    height = Math.min(1, Math.max(MIN_CROP, crop.height));
+  return {
+    width,
+    height,
+    x: Math.min(1 - width, Math.max(0, crop.x)),
+    y: Math.min(1 - height, Math.max(0, crop.y)),
+  };
+}
 export type Context2D = CanvasRenderingContext2D | OffscreenCanvasRenderingContext2D;
 export function background(
   ctx: Context2D,
@@ -62,6 +76,22 @@ export function text(
     ),
   );
 }
+// The drag hotspot for a text overlay needs its actual rendered footprint,
+// not a guess -- reuses text()'s exact font string so it never drifts from
+// what's really on screen.
+export function measureOverlay(
+  ctx: Context2D,
+  t: Overlay,
+  width: number,
+  height: number,
+) {
+  const scale = width / 1080;
+  ctx.font = `700 ${t.size * scale}px "${t.font}"`;
+  const lines = t.text.split("\n");
+  const w = Math.max(1, ...lines.map((line) => ctx.measureText(line).width));
+  const h = t.size * scale * 1.25 * Math.max(1, lines.length);
+  return { width: w, height: h };
+}
 // Shared by the live preview and the on-device WebCodecs export -- a decoded
 // VideoSample's toCanvasImageSource() and an HTMLVideoElement both satisfy
 // CanvasImageSource, so the exact same crop/scale/overlay math produces
@@ -90,7 +120,14 @@ export function compose(
         sourceHeight - sh,
         Math.floor((sourceHeight * c.y) / 2) * 2,
       );
-    const scale = Math.min(width / sw, height / sh);
+    // Scale/position come from fitting the FULL, uncropped source -- not the
+    // cropped region -- so the crop is a stable window into a frame that
+    // never itself rescales or reflows. Moving one edge only reveals or
+    // hides background at that edge; every untouched edge stays exactly
+    // where it was. worker/media.py's render() mirrors this exactly.
+    const scale = Math.min(width / sourceWidth, height / sourceHeight);
+    const baseX = (width - sourceWidth * scale) / 2,
+      baseY = (height - sourceHeight * scale) / 2;
     const w = Math.floor((sw * scale) / 2) * 2,
       h = Math.floor((sh * scale) / 2) * 2;
     ctx.drawImage(
@@ -99,8 +136,8 @@ export function compose(
       sy,
       sw,
       sh,
-      (width - w) / 2,
-      (height - h) / 2,
+      baseX + sx * scale,
+      baseY + sy * scale,
       w,
       h,
     );

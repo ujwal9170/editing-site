@@ -77,6 +77,51 @@ input[type="range"] {
   height: 24px;
   border: 0;
 }
+/* A custom slider (components/Slider.tsx) standing in for <input type=range>
+   wherever a light touch must not move the value -- native range inputs jump
+   to wherever you tap; this only ever follows a deliberate drag. */
+.slider-track {
+  position: relative;
+  height: 24px;
+  display: flex;
+  align-items: center;
+  cursor: pointer;
+  /* Let the browser still scroll a vertical swipe over the slider; only a
+     horizontal drag is claimed for the value itself. */
+  touch-action: pan-y;
+}
+.slider-track::before {
+  content: "";
+  position: absolute;
+  left: 0;
+  right: 0;
+  height: 6px;
+  border-radius: 3px;
+  background: #343b3f;
+}
+.slider-fill {
+  position: absolute;
+  left: 0;
+  height: 6px;
+  border-radius: 3px;
+  background: var(--accent);
+  pointer-events: none;
+}
+.slider-thumb {
+  position: absolute;
+  width: 18px;
+  height: 18px;
+  border-radius: 50%;
+  background: var(--accent);
+  border: 3px solid #1a1d20;
+  transform: translateX(-50%);
+  pointer-events: none;
+  box-shadow: 0 1px 3px #0006;
+}
+.slider-track:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 4px;
+}
 input[type="checkbox"] {
   width: 16px;
   accent-color: var(--accent);
@@ -92,7 +137,8 @@ label {
 }
 label > input,
 label > select,
-label > textarea {
+label > textarea,
+label > .slider-track {
   display: block;
   margin-top: 8px;
 }
@@ -496,7 +542,13 @@ header {
   border-left: 1px solid #0002;
   padding: 11px 10px;
 }
+/* Unlike .card-menu-list's other uses (a "more actions" menu with room above
+   it), this one hangs off the header at the very top of the page -- opening
+   upward like the base rule does pushes the whole menu above the viewport,
+   making it invisible and unclickable. Open it downward instead. */
 .export-options {
+  top: calc(100% + 6px);
+  bottom: auto;
   right: 0;
   padding: 10px;
   min-width: 240px;
@@ -735,7 +787,12 @@ header {
   padding: 2px;
 }
 .card-footer a {
+  /* Unlike a <button>, an <a> gets no centering by default -- without this
+     the download icon sits at the top-left of its touch target instead of
+     centered like its sibling buttons, reading as misaligned/floating. */
   display: flex;
+  align-items: center;
+  justify-content: center;
 }
 .upload-card {
   min-height: 340px;
@@ -1012,6 +1069,7 @@ header {
   align-items: center;
   justify-content: center;
   position: relative;
+  overflow: hidden;
   padding: 25px 20px 40px;
 }
 .preview-stage canvas {
@@ -1027,11 +1085,227 @@ header {
   opacity: 0;
   pointer-events: none;
 }
+/* Free hand crop shows the raw, uncropped frame instead of the composed
+   canvas, so the user can drag boundaries against the whole picture. Reusing
+   this element (rather than a second <video>) keeps it perfectly in sync
+   with playback/scrubbing and avoids a second network fetch of the source. */
+.source-video-visible {
+  position: absolute;
+  inset: 0;
+  margin: auto;
+  width: auto;
+  height: auto;
+  max-width: 100%;
+  max-height: 100%;
+  opacity: 1;
+  object-fit: contain;
+}
 .canvas-label {
   position: absolute;
   bottom: 11px;
   font-size: 12px;
   color: #889095;
+}
+/* Free hand crop overlay: a bordered frame with a thirds grid and edge/corner
+   drag handles, sized in the source video's own fractional coordinates so it
+   lines up with the visible frame at any preview size. .text-drag-frame
+   shares this exact geometry (always a 9:16 box, set inline) so text drag
+   handles land exactly on the canvas beneath them. */
+.crop-overlay,
+.text-drag-frame {
+  position: absolute;
+  inset: 0;
+  margin: auto;
+  max-width: 100%;
+  max-height: 100%;
+  pointer-events: none;
+}
+.crop-frame {
+  position: absolute;
+  border: 2px solid var(--accent);
+  /* Dims everything outside the selection; clipped by .preview-stage's own
+     overflow:hidden rather than this element's, so drag handles sitting a
+     little outside the frame (below) are never cut off. */
+  box-shadow: 0 0 0 1000px #00000099;
+  touch-action: none;
+}
+.crop-grid-line {
+  position: absolute;
+  background: #ffffff55;
+  pointer-events: none;
+}
+.crop-grid-line.v {
+  top: 0;
+  bottom: 0;
+  width: 1px;
+}
+.crop-grid-line.h {
+  left: 0;
+  right: 0;
+  height: 1px;
+}
+.crop-handle {
+  position: absolute;
+  pointer-events: auto;
+  touch-action: none;
+}
+/* Edge handles: a slim strip along the middle of each side, with a visible
+   grip bar centered on it so the drag target is obvious without covering
+   the frame. Kept within 10px of the frame edge so it never runs past the
+   stage's own padding (its smallest padding, on a short landscape phone,
+   is 10px) and gets clipped. */
+.crop-handle-t,
+.crop-handle-b {
+  left: 20%;
+  right: 20%;
+  height: 20px;
+}
+.crop-handle-t {
+  top: -10px;
+  cursor: ns-resize;
+}
+.crop-handle-b {
+  bottom: -10px;
+  cursor: ns-resize;
+}
+.crop-handle-l,
+.crop-handle-r {
+  top: 20%;
+  bottom: 20%;
+  width: 20px;
+}
+.crop-handle-l {
+  left: -10px;
+  cursor: ew-resize;
+}
+.crop-handle-r {
+  right: -10px;
+  cursor: ew-resize;
+}
+.crop-handle-t::after,
+.crop-handle-b::after {
+  content: "";
+  position: absolute;
+  left: 50%;
+  top: 50%;
+  transform: translate(-50%, -50%);
+  width: 34px;
+  height: 5px;
+  border-radius: 3px;
+  background: var(--accent);
+}
+.crop-handle-l::after,
+.crop-handle-r::after {
+  content: "";
+  position: absolute;
+  left: 50%;
+  top: 50%;
+  transform: translate(-50%, -50%);
+  width: 5px;
+  height: 34px;
+  border-radius: 3px;
+  background: var(--accent);
+}
+/* Corner handles: an L-shaped bracket, resizing both axes at once. */
+.crop-handle-tl,
+.crop-handle-tr,
+.crop-handle-bl,
+.crop-handle-br {
+  width: 22px;
+  height: 22px;
+}
+.crop-handle-tl {
+  left: -10px;
+  top: -10px;
+  cursor: nwse-resize;
+  border-top: 4px solid var(--accent);
+  border-left: 4px solid var(--accent);
+}
+.crop-handle-tr {
+  right: -10px;
+  top: -10px;
+  cursor: nesw-resize;
+  border-top: 4px solid var(--accent);
+  border-right: 4px solid var(--accent);
+}
+.crop-handle-bl {
+  left: -10px;
+  bottom: -10px;
+  cursor: nesw-resize;
+  border-bottom: 4px solid var(--accent);
+  border-left: 4px solid var(--accent);
+}
+.crop-handle-br {
+  right: -10px;
+  bottom: -10px;
+  cursor: nwse-resize;
+  border-bottom: 4px solid var(--accent);
+  border-right: 4px solid var(--accent);
+}
+.freehand-toggle {
+  margin-top: 4px;
+}
+.crop-axis-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin-top: 8px;
+}
+.crop-axis-row .slider-track {
+  flex: 1;
+}
+.crop-axis-value {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  flex-shrink: 0;
+  font-size: 13px;
+  color: var(--muted);
+}
+.crop-axis-value input[type="number"] {
+  width: 52px;
+  text-align: center;
+  padding: 8px 4px;
+}
+/* Text drag handle: a dashed outline roughly the size of the rendered text
+   (measured, not guessed) so grabbing it feels like grabbing the text
+   itself. Anchored the same way text() draws it -- x is the horizontal
+   center, y is the top. */
+.text-drag-handle {
+  position: absolute;
+  transform: translateX(-50%);
+  border: 1.5px dashed #ffffffaa;
+  border-radius: 4px;
+  pointer-events: auto;
+  touch-action: none;
+  cursor: grab;
+  min-width: 44px;
+  min-height: 32px;
+}
+.text-drag-handle:active {
+  cursor: grabbing;
+  border-color: var(--accent);
+  background: #c5ff5f22;
+}
+.text-drag-handle.selected {
+  border-style: solid;
+  border-color: var(--accent);
+}
+/* Sits in the handle's corner so a delete is one tap away right where
+   you're already interacting with the text -- no need to scroll the panel
+   to find "Remove text". stopPropagation on pointerdown keeps a tap here
+   from also starting a drag on the handle underneath it. */
+.text-drag-delete {
+  position: absolute;
+  top: -12px;
+  right: -12px;
+  width: 24px;
+  height: 24px;
+  border-radius: 50%;
+  background: #dc2626;
+  color: #fff;
+  border: 2px solid #1a1d20;
+  pointer-events: auto;
 }
 .playback {
   display: flex;
@@ -1202,6 +1476,14 @@ header {
   border-top: 1px solid var(--line);
   margin-top: 20px;
   padding-top: 2px;
+}
+/* Marks which text a canvas tap (or focusing one of its own fields)
+   selected, since with several overlays it's otherwise not obvious which
+   card belongs to the one you just tapped on the video. */
+.text-card.selected {
+  border-top-color: var(--accent);
+  box-shadow: -3px 0 0 var(--accent);
+  padding-left: 10px;
 }
 .text-card .row input {
   padding: 8px;
@@ -1606,12 +1888,17 @@ header {
     min-height: 140px;
     border-radius: 0;
     border-width: 0 0 1px;
-    padding: 10px 12px 24px;
+    /* Top/side padding kept >= the crop overlay's handle overhang (10px) so
+       a handle at the frame's edge is never clipped. */
+    padding: 12px 12px 24px;
   }
   /* Positioned rather than flex-centred on purpose: `max-height: 100%` does not
      resolve against a flex-sized parent, so an in-flow canvas kept its full
      height and got clipped off the top of the screen instead of scaling down. */
-  .preview-stage canvas {
+  .preview-stage canvas,
+  .source-video-visible,
+  .crop-overlay,
+  .text-drag-frame {
     position: absolute;
     inset: 0;
     margin: auto;
@@ -1634,14 +1921,22 @@ header {
     height: 50px;
   }
 
-  /* Timeline: bigger clips and a scrubber that a thumb can actually grab. */
+  /* Timeline: bigger clips and a scrubber that a thumb can actually grab.
+     Capped to the same small share of the screen as an open tool panel --
+     the video stays the dominant thing on screen whether or not a tool
+     sheet happens to be open, not just when one is. */
   .timeline {
     border-width: 1px 0 0;
     border-radius: 0;
-    padding: 12px;
+    padding: 10px 12px;
     background: transparent;
     flex: none;
+    height: 16vh;
     overflow-y: auto;
+    overscroll-behavior: contain;
+  }
+  .timeline .hint {
+    display: none;
   }
   .timeline-toolbar {
     flex-wrap: nowrap;
@@ -1699,6 +1994,13 @@ header {
     background: var(--accent);
     border: 3px solid #1a1d20;
   }
+  .slider-track {
+    height: 34px;
+  }
+  .slider-thumb {
+    width: 26px;
+    height: 26px;
+  }
 
   /* Tools: a labelled bar at the bottom with its panel directly above it.
      Deliberately in normal flow, not a fixed overlay -- an overlay covered the
@@ -1729,9 +2031,15 @@ header {
   .tool-body {
     display: none;
   }
+  /* A fixed (not max-) height so the panel is the same size on every tab --
+     the video pane above it must never resize just because Text has more
+     controls than Crop. Kept small on purpose: the video is the point, the
+     panel is a scrollable drawer, not a page of its own. */
   .inspector.sheet-open .tool-body {
     display: block;
-    max-height: 46vh;
+    /* Combined with the sheet header this stays under ~20% of the screen
+       even on a short phone -- the video is the point, this is a drawer. */
+    height: 16vh;
     padding: 0 16px 16px;
     border-bottom: 1px solid var(--line);
     overflow-y: auto;
@@ -1777,6 +2085,13 @@ header {
   .tool-body .subtle,
   .tool-body .primary {
     min-height: 46px;
+  }
+  /* In this short, scrollable panel, focusing a slider can auto-scroll just
+     the input into view and leave its own label above the fold -- keep
+     headroom so e.g. "Top & bottom" never looks detached from its slider. */
+  .tool-body input[type="range"],
+  .tool-body .slider-track {
+    scroll-margin-top: 30px;
   }
   .tool-body select,
   .tool-body input[type="number"],
@@ -1888,7 +2203,8 @@ header {
   }
   .preview-stage {
     height: 54vh;
-    padding: 6px 10px 20px;
+    /* Top/side padding kept >= the crop overlay's handle overhang (10px). */
+    padding: 10px 10px 20px;
   }
   .canvas-label {
     display: none;
@@ -1911,6 +2227,6 @@ header {
     padding: 6px 2px;
   }
   .inspector.sheet-open .tool-body {
-    max-height: 58vh;
+    height: 16vh;
   }
 }
