@@ -25,6 +25,8 @@ import {
   Grid3x3,
   RotateCcw,
   Check,
+  Move,
+  Film,
 } from "lucide-react";
 import { api, fileUrl, clock, awaitJob } from "@/lib/api";
 import {
@@ -36,8 +38,15 @@ import {
   clampCrop,
   MIN_CROP,
   measureOverlay,
+  videoBox,
   type Crop as CropRect,
 } from "@/lib/canvas";
+import {
+  centringPan,
+  CENTRED_EPSILON,
+  clampPan,
+  magnetToCentre,
+} from "@/shared/export.mjs";
 import type { Edit, Overlay, Project } from "@/lib/types";
 import type { ExportTask } from "@/lib/useDeviceExports";
 
@@ -54,7 +63,13 @@ export default function Editor({
   onSaved: (p: Project) => void;
   onBack?: () => void;
 }) {
-  const [edit, setEdit] = useState<Edit>(initial.edit),
+  // Projects saved before panning existed have no offset. Fill it in here
+  // rather than making every reader defensive -- the spread order means a
+  // stored offset always wins over this default.
+  const [edit, setEdit] = useState<Edit>(() => ({
+      offset: { x: 0, y: 0 },
+      ...initial.edit,
+    })),
     [name, setName] = useState(initial.name),
     [caption, setCaption] = useState(initial.caption),
     [tab, setTab] = useState("crop"),
@@ -83,7 +98,9 @@ export default function Editor({
       x: number;
       y: number;
     } | null>(null),
-    [selectedTextId, setSelectedTextId] = useState<string | null>(null);
+    [selectedTextId, setSelectedTextId] = useState<string | null>(null),
+    [livePan, setLivePan] = useState<{ x: number; y: number } | null>(null),
+    [onCentre, setOnCentre] = useState({ x: false, y: false });
   const video = useRef<HTMLVideoElement>(null),
     derived = useRef<HTMLAudioElement>(null),
     canvas = useRef<HTMLCanvasElement>(null),
@@ -104,7 +121,9 @@ export default function Editor({
       caption: initial.caption,
     }),
   );
-  current.current = edit;
+  // The canvas follows an in-flight pan live; `edit` -- and so undo history and
+  // autosave -- only moves once, when the finger lifts.
+  current.current = livePan ? { ...edit, offset: livePan } : edit;
   useEffect(() => {
     alive.current = true;
     return () => {
@@ -372,6 +391,21 @@ export default function Editor({
       setSeparating(false);
     }
   }
+  // Where the video currently sits on the canvas, and the pan that would put it
+  // dead centre. With a crop applied those differ: an offset of zero leaves the
+  // frame wherever cropping left it, which is not the middle.
+  const [canvasWidth, canvasHeight] = dimensions(edit.canvas.aspectRatio);
+  const frameBox =
+    media.width && media.height
+      ? videoBox(edit, canvasWidth, canvasHeight, media.width, media.height)
+      : null;
+  const centre = frameBox ? centringPan(frameBox) : { x: 0, y: 0 };
+  // Deliberately not an exact comparison: rounding the drawn frame to even
+  // pixels leaves a sub-pixel gap, and offering to "centre" a video that is
+  // already centred to within half a pixel just looks broken.
+  const panned =
+    Math.abs(edit.offset.x - centre.x) > CENTRED_EPSILON ||
+    Math.abs(edit.offset.y - centre.y) > CENTRED_EPSILON;
   const effective =
     edit.segments
       .filter((s) => s.enabled)
@@ -401,6 +435,33 @@ export default function Editor({
           </span>
         </div>
         <div className="row">
+          {/* History used to live in the timeline toolbar. With the timeline
+              now a tool tab of its own, it belongs somewhere reachable from
+              every tab -- and it applies to crop, text and colour too. */}
+          <button
+            className="subtle history-action"
+            aria-label="Undo"
+            disabled={!past.length}
+            onClick={() => {
+              setFuture((f) => [edit, ...f]);
+              setEdit(past.at(-1)!);
+              setPast(past.slice(0, -1));
+            }}
+          >
+            <Undo2 size={17} />
+          </button>
+          <button
+            className="subtle history-action"
+            aria-label="Redo"
+            disabled={!future.length}
+            onClick={() => {
+              setPast((p) => [...p, edit]);
+              setEdit(future[0]);
+              setFuture(future.slice(1));
+            }}
+          >
+            <Redo2 size={17} />
+          </button>
           <button
             className="subtle save-action"
             onClick={() => save().catch(() => {})}
@@ -467,7 +528,7 @@ export default function Editor({
       </div>
       <div className="edit-workspace">
         <div className="preview-column">
-          <div className="preview-stage">
+          <div className={`preview-stage${freehand ? " freehand" : ""}`}>
             <canvas
               ref={canvas}
               aria-label="Edited video preview"
@@ -505,6 +566,26 @@ export default function Editor({
                     return null;
                   });
                 }}
+              />
+            )}
+            {!freehand && frameBox && (
+              <VideoPanLayer
+                box={frameBox}
+                sizeRef={canvas}
+                offset={livePan ?? edit.offset}
+                onChange={(pan, centred) => {
+                  setLivePan(pan);
+                  setOnCentre(centred);
+                }}
+                onCommit={() => {
+                  setOnCentre({ x: false, y: false });
+                  setLivePan((pan) => {
+                    if (pan) change({ ...edit, offset: pan });
+                    return null;
+                  });
+                }}
+                onTap={() => toggle().catch((e) => onError(e.message))}
+                guides={livePan ? onCentre : { x: false, y: false }}
               />
             )}
             {tab === "text" && (
@@ -556,74 +637,21 @@ export default function Editor({
                   })}
               </div>
             )}
-            <span className="canvas-label">
-              {edit.canvas.aspectRatio} ·{" "}
-              {dimensions(edit.canvas.aspectRatio).join(" × ")}
-            </span>
           </div>
-          <div className="playback">
-            <span className="playback-label">PREVIEW</span>
+          {/* One thin transport strip instead of an oversized round button and
+              a second scrubber down in the timeline: play, scrub and read the
+              time without spending vertical space the video wants. */}
+          <div className="player-bar">
             <button
               aria-label={playing ? "Pause video" : "Play video"}
-              className="play-button"
+              className="player-play"
               onClick={() => toggle().catch((e) => onError(e.message))}
             >
-              {playing ? <Pause size={19} /> : <Play size={19} />}
+              {playing ? <Pause size={16} /> : <Play size={16} />}
             </button>
-            <span>
-              {clock(time)} / {clock(duration)}
-            </span>
-          </div>
-          <div className="timeline">
-            <div className="timeline-toolbar">
-              <strong>Timeline</strong>
-              <div className="row">
-                <button
-                  aria-label="Undo"
-                  disabled={!past.length}
-                  onClick={() => {
-                    setFuture((f) => [edit, ...f]);
-                    setEdit(past.at(-1)!);
-                    setPast(past.slice(0, -1));
-                  }}
-                >
-                  <Undo2 size={17} />
-                </button>
-                <button
-                  aria-label="Redo"
-                  disabled={!future.length}
-                  onClick={() => {
-                    setPast((p) => [...p, edit]);
-                    setEdit(future[0]);
-                    setFuture(future.slice(1));
-                  }}
-                >
-                  <Redo2 size={17} />
-                </button>
-                <button className="subtle compact" onClick={split}>
-                  <Scissors size={15} /> Split
-                </button>
-                <button
-                  aria-label="Remove selected clip"
-                  disabled={
-                    !edit.segments[selected]?.enabled ||
-                    edit.segments.filter((s) => s.enabled).length < 2
-                  }
-                  onClick={() =>
-                    change({
-                      ...edit,
-                      segments: edit.segments.map((s, i) =>
-                        i === selected ? { ...s, enabled: false } : s,
-                      ),
-                    })
-                  }
-                >
-                  <Trash2 size={17} />
-                </button>
-              </div>
-            </div>
             <input
-              aria-label="Timeline playhead"
+              className="player-scrub"
+              aria-label="Playback position"
               type="range"
               min="0"
               max={duration}
@@ -631,46 +659,15 @@ export default function Editor({
               value={time}
               onChange={(e) => seek(Number(e.target.value))}
             />
-            <div className="clip-track">
-              {edit.segments.map((s, i) => (
-                <button
-                  key={`${s.startMs}-${s.endMs}`}
-                  className={`clip ${selected === i ? "selected" : ""} ${!s.enabled ? "removed" : ""}`}
-                  style={{ flex: Math.max(0.1, s.endMs - s.startMs) }}
-                  title={`${clock(s.startMs / 1000)}–${clock(s.endMs / 1000)}${s.enabled ? "" : " removed; double-click to restore"}`}
-                  onClick={() => {
-                    setSelected(i);
-                    seek(s.startMs / 1000);
-                  }}
-                  onDoubleClick={() => {
-                    if (!s.enabled)
-                      change({
-                        ...edit,
-                        segments: edit.segments.map((seg, n) =>
-                          n === i ? { ...seg, enabled: true } : seg,
-                        ),
-                      });
-                  }}
-                >
-                  <FilmStrip />
-                  {s.enabled ? clock((s.endMs - s.startMs) / 1000) : "Removed"}
-                </button>
-              ))}
-            </div>
-            <div className="timeline-scale">
-              <span>00:00</span>
-              <span>{clock(duration / 2)}</span>
-              <span>{clock(duration)}</span>
-            </div>
-            <p className="hint">
-              Split at the playhead. Select a clip to remove it; double-click a
-              removed clip to restore.
-            </p>
+            <span className="player-time">
+              {clock(time)} / {clock(duration)}
+            </span>
           </div>
         </div>
         <aside className={`inspector ${sheetOpen ? "sheet-open" : ""}`}>
           <div className="tool-tabs">
             {[
+              ["clips", Film, "Clips"],
               ["crop", Crop, "Crop"],
               ["text", Type, "Text"],
               ["background", Palette, "Colour"],
@@ -723,6 +720,64 @@ export default function Editor({
                 <X size={20} />
               </button>
             </div>
+            {tab === "clips" && (
+              <>
+                <div className="clip-actions">
+                  <button className="primary" onClick={split}>
+                    <Scissors size={15} /> Split here
+                  </button>
+                  <button
+                    className="subtle"
+                    disabled={
+                      !edit.segments[selected]?.enabled ||
+                      edit.segments.filter((s) => s.enabled).length < 2
+                    }
+                    onClick={() =>
+                      change({
+                        ...edit,
+                        segments: edit.segments.map((s, i) =>
+                          i === selected ? { ...s, enabled: false } : s,
+                        ),
+                      })
+                    }
+                  >
+                    <Trash2 size={16} /> Remove clip
+                  </button>
+                </div>
+                <div className="clip-track">
+                  {edit.segments.map((s, i) => (
+                    <button
+                      key={`${s.startMs}-${s.endMs}`}
+                      className={`clip ${selected === i ? "selected" : ""} ${!s.enabled ? "removed" : ""}`}
+                      style={{ flex: Math.max(0.1, s.endMs - s.startMs) }}
+                      title={`${clock(s.startMs / 1000)}–${clock(s.endMs / 1000)}${s.enabled ? "" : " removed; double-click to restore"}`}
+                      onClick={() => {
+                        setSelected(i);
+                        seek(s.startMs / 1000);
+                      }}
+                      onDoubleClick={() => {
+                        if (!s.enabled)
+                          change({
+                            ...edit,
+                            segments: edit.segments.map((seg, n) =>
+                              n === i ? { ...seg, enabled: true } : seg,
+                            ),
+                          });
+                      }}
+                    >
+                      <FilmStrip />
+                      {s.enabled
+                        ? clock((s.endMs - s.startMs) / 1000)
+                        : "Removed"}
+                    </button>
+                  ))}
+                </div>
+                <p className="hint clips-hint">
+                  Split cuts at the playhead. Tap a clip to select it;
+                  double-tap a removed one to bring it back.
+                </p>
+              </>
+            )}
             {tab === "crop" && !freehand && (
               <>
                 <button
@@ -805,9 +860,18 @@ export default function Editor({
                     </label>
                   );
                 })}
+                <hr />
+                <button
+                  className="subtle wide"
+                  disabled={!panned}
+                  onClick={() => change({ ...edit, offset: centre })}
+                >
+                  <Move size={15} /> Centre the video
+                </button>
                 <p className="hint">
-                  Each side crops on its own. Free hand below does the same
-                  thing by dragging directly on the video.
+                  Each side crops on its own. Drag the video itself to slide it
+                  around the frame -- it pulls towards the centre line as you
+                  get close.
                 </p>
               </>
             )}
@@ -1334,12 +1398,118 @@ function CropOverlay({
     </div>
   );
 }
+// Shared by both on-canvas drags: under this many pixels of movement the
+// gesture was a tap, not a drag, and the two handlers each do something more
+// useful with it than repositioning by zero.
+const TAP_THRESHOLD = 4;
+// Sliding the whole video is the same gesture as moving a text overlay, on
+// purpose: press anywhere on the picture and drag. Two details make it work on
+// a phone. A press that never passes the tap threshold is a tap, not a
+// zero-length drag, so it toggles playback instead -- the video is by far the
+// biggest target on screen. And the canvas centre is sticky: the finger's raw
+// position is tracked exactly, but the value actually drawn and saved is eased
+// towards centre near it, so letting go anywhere close lands exactly centred
+// while a deliberate drag still goes wherever you want.
+function VideoPanLayer({
+  box,
+  sizeRef,
+  offset,
+  guides,
+  onChange,
+  onCommit,
+  onTap,
+}: {
+  box: { x: number; y: number; width: number; height: number };
+  // The composed canvas. This surface may spill into the stage's padding, so
+  // the canvas is what a pixel of finger travel has to be measured against for
+  // the video to keep up with the finger exactly.
+  sizeRef: RefObject<HTMLCanvasElement | null>;
+  offset: { x: number; y: number };
+  guides: { x: boolean; y: boolean };
+  onChange: (
+    pan: { x: number; y: number },
+    centred: { x: boolean; y: boolean },
+  ) => void;
+  onCommit: () => void;
+  onTap: () => void;
+}) {
+  const drag = useRef<{
+    startX: number;
+    startY: number;
+    startPanX: number;
+    startPanY: number;
+    width: number;
+    height: number;
+    moved: boolean;
+  } | null>(null);
+  const centre = centringPan(box);
+  function down(e: ReactPointerEvent<HTMLDivElement>) {
+    e.currentTarget.setPointerCapture(e.pointerId);
+    const rect = sizeRef.current?.getBoundingClientRect();
+    if (!rect) return;
+    drag.current = {
+      startX: e.clientX,
+      startY: e.clientY,
+      startPanX: offset.x,
+      startPanY: offset.y,
+      width: rect.width,
+      height: rect.height,
+      moved: false,
+    };
+  }
+  function move(e: ReactPointerEvent<HTMLDivElement>) {
+    const d = drag.current;
+    if (!d || d.width <= 0 || d.height <= 0) return;
+    const pixelDx = e.clientX - d.startX,
+      pixelDy = e.clientY - d.startY;
+    if (
+      !d.moved &&
+      Math.abs(pixelDx) < TAP_THRESHOLD &&
+      Math.abs(pixelDy) < TAP_THRESHOLD
+    )
+      return;
+    d.moved = true;
+    // Magnetise the *raw* finger position every move rather than the value we
+    // last published: pulling from the raw value is what lets the centre let go
+    // the moment you drag past the window, instead of the frame staying stuck
+    // to a centre it had already snapped to.
+    const raw = {
+      x: d.startPanX + pixelDx / d.width,
+      y: d.startPanY + pixelDy / d.height,
+    };
+    const pan = clampPan(
+      {
+        x: centre.x + magnetToCentre(raw.x - centre.x),
+        y: centre.y + magnetToCentre(raw.y - centre.y),
+      },
+      box,
+    );
+    onChange(pan, { x: pan.x === centre.x, y: pan.y === centre.y });
+  }
+  function up() {
+    if (drag.current?.moved) onCommit();
+    else if (drag.current) onTap();
+    drag.current = null;
+  }
+  return (
+    <div
+      className="video-pan-layer"
+      style={{ aspectRatio: "9 / 16" }}
+      onPointerDown={down}
+      onPointerMove={move}
+      onPointerUp={up}
+      onPointerCancel={up}
+    >
+      {guides.y && <span className="centre-guide h" aria-hidden="true" />}
+      {guides.x && <span className="centre-guide v" aria-hidden="true" />}
+    </div>
+  );
+}
 // A text overlay's position, draggable directly on the preview. Position
 // only, on purpose -- x/y move together as one drag, nothing else changes
 // (no resize, no rotate) so a drag can never do more than reposition it. A
 // tap that never moves past the threshold selects the text (so its card
 // scrolls into view in the panel) instead of "dragging" it by zero.
-const TAP_THRESHOLD = 4;
 function TextDragHandle({
   x,
   y,

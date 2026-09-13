@@ -1,3 +1,4 @@
+import { cropGeometry } from "../shared/export.mjs";
 import type { Edit, Overlay } from "./types";
 export const fonts = ["Inter", "DM Sans", "Montserrat", "Roboto"];
 export const textColors = [
@@ -92,6 +93,42 @@ export function measureOverlay(
   const h = t.size * scale * 1.25 * Math.max(1, lines.length);
   return { width: w, height: h };
 }
+// Where the cropped, panned video lands on the canvas. Thin wrapper over the
+// export worker's own geometry so preview and MP4 can never disagree.
+export function videoGeometry(
+  edit: Edit,
+  width: number,
+  height: number,
+  sourceWidth: number,
+  sourceHeight: number,
+) {
+  return cropGeometry(
+    edit.crop,
+    sourceWidth,
+    sourceHeight,
+    width,
+    height,
+    edit.offset,
+  );
+}
+// The drawn video as canvas fractions, which is what a drag gesture works in:
+// the pan clamp needs to know how much of the frame is still on screen, and the
+// on-canvas drag surface needs to sit exactly on the visible picture.
+export function videoBox(
+  edit: Edit,
+  width: number,
+  height: number,
+  sourceWidth: number,
+  sourceHeight: number,
+) {
+  const g = cropGeometry(edit.crop, sourceWidth, sourceHeight, width, height);
+  return {
+    x: g.drawX / width,
+    y: g.drawY / height,
+    width: g.drawWidth / width,
+    height: g.drawHeight / height,
+  };
+}
 // Shared by the live preview and the on-device WebCodecs export -- a decoded
 // VideoSample's toCanvasImageSource() and an HTMLVideoElement both satisfy
 // CanvasImageSource, so the exact same crop/scale/overlay math produces
@@ -109,37 +146,22 @@ export function compose(
 ) {
   background(ctx, edit, width, height);
   if (frame && sourceWidth && sourceHeight) {
-    const c = edit.crop,
-      sw = Math.max(2, Math.floor((sourceWidth * c.width) / 2) * 2),
-      sh = Math.max(2, Math.floor((sourceHeight * c.height) / 2) * 2);
-    const sx = Math.min(
-        sourceWidth - sw,
-        Math.floor((sourceWidth * c.x) / 2) * 2,
-      ),
-      sy = Math.min(
-        sourceHeight - sh,
-        Math.floor((sourceHeight * c.y) / 2) * 2,
-      );
-    // Scale/position come from fitting the FULL, uncropped source -- not the
-    // cropped region -- so the crop is a stable window into a frame that
-    // never itself rescales or reflows. Moving one edge only reveals or
-    // hides background at that edge; every untouched edge stays exactly
-    // where it was. worker/media.py's render() mirrors this exactly.
-    const scale = Math.min(width / sourceWidth, height / sourceHeight);
-    const baseX = (width - sourceWidth * scale) / 2,
-      baseY = (height - sourceHeight * scale) / 2;
-    const w = Math.floor((sw * scale) / 2) * 2,
-      h = Math.floor((sh * scale) / 2) * 2;
+    // The one geometry function, shared with the on-device export worker, so
+    // the preview cannot drift from the exported MP4. Scale/position come from
+    // fitting the FULL, uncropped source -- not the cropped region -- so the
+    // crop is a stable window into a frame that never itself rescales or
+    // reflows, and the pan then moves that whole window as a unit.
+    const g = videoGeometry(edit, width, height, sourceWidth, sourceHeight);
     ctx.drawImage(
       frame,
-      sx,
-      sy,
-      sw,
-      sh,
-      baseX + sx * scale,
-      baseY + sy * scale,
-      w,
-      h,
+      g.left,
+      g.top,
+      g.width,
+      g.height,
+      g.drawX,
+      g.drawY,
+      g.drawWidth,
+      g.drawHeight,
     );
   }
   edit.textOverlays

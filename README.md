@@ -44,6 +44,8 @@ Optional settings are documented in `.env.example`. Copy it to `.env` when overr
 - Editor library cards show source thumbnails and allow deleting a saved edit without deleting its source or exported videos. Deleting Media with linked edits requires explicit confirmation of the current edit count; it removes those drafts and processed stems, while exports stay available. Active render/audio jobs block deletion until they finish.
 - Generated leading `Video by` text is removed from imported names and existing Media, project and export names; captions and custom non-prefixed titles are preserved.
 - Fixed 9:16 Reel canvas (1080×1920), fill-frame crop, adjustable crop and fit-full-video.
+- Drag the video itself to slide it around the frame after cropping, on both axes. The drag eases towards the canvas centre line as it gets close without locking there, shows a guide when it rests on it, and a Centre the video control resets it. The pan is stored as a fraction of the canvas, so preview, 720p and 1080p exports place the frame identically.
+- Phone-first editor chrome: a slim transport strip sits directly under the picture (play/pause, scrub and clock, no second playhead), clips and Split live in their own tool tab beside Crop/Text/Colour/Audio/Caption, undo/redo sit in the header, and nothing but the video occupies the preview stage.
 - Text overlays with four bundled fonts, five text colors, positions, sizes and source-timeline timing.
 - Five background swatches, custom HTML color input, and two/three-color gradients.
 - Timeline split, disable/delete and restore; export skips disabled segments. Timings remain in source coordinates.

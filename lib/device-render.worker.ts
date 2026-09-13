@@ -108,6 +108,7 @@ self.onmessage = async ({
       videoTrack.displayHeight,
       width,
       height,
+      data.edit.offset,
     );
     const sink = new CanvasSink(videoTrack, {
       crop: {

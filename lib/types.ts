@@ -31,6 +31,9 @@ export type Edit = {
     background: { type: string; colors: string[]; angle: number };
   };
   crop: { x: number; y: number; width: number; height: number };
+  // Pans the drawn video around the canvas, as a fraction of the canvas. Absent
+  // on projects saved before panning existed; the editor centres those on load.
+  offset: { x: number; y: number };
   segments: Segment[];
   textOverlays: Overlay[];
   audio: { mode: string; derivativeId: string | null };

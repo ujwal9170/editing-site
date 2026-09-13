@@ -135,6 +135,25 @@ test("download API routes all three sources to the same import queue", async () 
   }
 });
 
+test("an edit saved before panning existed still loads, centred", () => {
+  const edit = initialEdit(10000);
+  assert.deepEqual(edit.offset, { x: 0, y: 0 });
+  const { offset, ...legacy } = edit;
+  // The whole point: no offset means "not panned", not "invalid project".
+  assert.deepEqual(validateEdit(legacy, 10000), edit);
+  assert.deepEqual(
+    validateEdit({ ...edit, offset: { x: -0.4, y: 0.25 } }, 10000).offset,
+    { x: -0.4, y: 0.25 },
+  );
+  for (const bad of [
+    { x: 2, y: 0 },
+    { x: 0, y: -1.5 },
+    { x: "0", y: 0 },
+    { x: 0 },
+  ])
+    assert.throws(() => validateEdit({ ...edit, offset: bad }, 10000));
+});
+
 test("edit validation rejects out-of-bounds crops, overlaps and an empty timeline", () => {
   const edit = initialEdit(10000);
   assert.deepEqual(validateEdit(edit, 10000), edit);

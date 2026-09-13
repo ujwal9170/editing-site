@@ -1070,7 +1070,7 @@ header {
   justify-content: center;
   position: relative;
   overflow: hidden;
-  padding: 25px 20px 40px;
+  padding: 12px 16px;
 }
 .preview-stage canvas {
   max-height: 100%;
@@ -1100,12 +1100,6 @@ header {
   opacity: 1;
   object-fit: contain;
 }
-.canvas-label {
-  position: absolute;
-  bottom: 11px;
-  font-size: 12px;
-  color: #889095;
-}
 /* Free hand crop overlay: a bordered frame with a thirds grid and edge/corner
    drag handles, sized in the source video's own fractional coordinates so it
    lines up with the visible frame at any preview size. .text-drag-frame
@@ -1128,6 +1122,51 @@ header {
      little outside the frame (below) are never cut off. */
   box-shadow: 0 0 0 1000px #00000099;
   touch-action: none;
+}
+/* Drag surface for sliding the video, laid over the composed canvas. Rendered
+   before .text-drag-frame so a text handle still wins the pointer on the Text
+   tab while a drag anywhere else pans the picture underneath it. The gesture
+   measures the canvas itself rather than this box, so a layer that spills into
+   the stage's padding still tracks the finger one-to-one. */
+.video-pan-layer {
+  position: absolute;
+  inset: 0;
+  margin: auto;
+  max-width: 100%;
+  max-height: 100%;
+  touch-action: none;
+  cursor: grab;
+}
+.video-pan-layer:active {
+  cursor: grabbing;
+}
+/* Only drawn while a drag is actually resting on the centre line, so it reads
+   as feedback for the pull rather than permanent chrome over the video. */
+.centre-guide {
+  position: absolute;
+  background: var(--accent);
+  opacity: 0.9;
+  pointer-events: none;
+}
+.centre-guide.h {
+  left: 0;
+  right: 0;
+  top: 50%;
+  height: 1px;
+}
+.centre-guide.v {
+  top: 0;
+  bottom: 0;
+  left: 50%;
+  width: 1px;
+}
+/* Free hand crop hangs drag handles up to 10px outside the frame. That mode
+   alone buys back the clearance, so every other mode can spend the whole stage
+   on the picture. */
+.preview-stage.freehand .source-video-visible,
+.preview-stage.freehand .crop-overlay {
+  max-width: calc(100% - 22px);
+  max-height: calc(100% - 22px);
 }
 .crop-grid-line {
   position: absolute;
@@ -1303,20 +1342,39 @@ header {
   border: 2px solid #1a1d20;
   pointer-events: auto;
 }
-.playback {
+/* Transport strip: a small play toggle, a scrub that takes all the room left
+   over, and the clock. Directly under the picture, replacing both the oversized
+   round button and the second playhead that used to live in the timeline. */
+.player-bar {
   display: flex;
   align-items: center;
-  justify-content: space-between;
-  padding: 15px 5px;
+  gap: 12px;
+  padding: 8px 4px;
   font-size: 12px;
   color: var(--muted);
 }
-.play-button {
+.player-play {
+  flex: none;
+  display: grid;
+  place-items: center;
+  width: 32px;
+  height: 32px;
   border-radius: 50%;
   background: var(--accent);
   color: var(--ink);
-  width: 38px;
-  height: 38px;
+}
+.player-scrub {
+  flex: 1;
+  min-width: 0;
+}
+.player-time {
+  flex: none;
+  font-variant-numeric: tabular-nums;
+}
+/* Icon-only at every width: undo and redo are universally understood arrows and
+   a label here would crowd the export button off the bar. */
+.history-action {
+  padding: 10px;
 }
 .inspector {
   border: 1px solid var(--line);
@@ -1378,26 +1436,14 @@ header {
   color: var(--muted);
   margin-top: 14px;
 }
-.timeline {
-  border: 1px solid var(--line);
-  border-radius: 12px;
-  padding: 18px;
-  background: var(--panel);
-}
-.timeline-toolbar {
+.clip-actions {
   display: flex;
-  align-items: center;
-  justify-content: space-between;
-  margin-bottom: 15px;
-}
-.timeline-toolbar strong {
-  font-size: 14px;
-}
-.timeline-toolbar .row {
   gap: 8px;
+  margin-bottom: 12px;
 }
-.timeline > input {
-  margin: 10px 0;
+.clip-actions button {
+  flex: 1;
+  justify-content: center;
 }
 .clip-track {
   display: flex;
@@ -1429,13 +1475,6 @@ header {
 .film-strip {
   font-size: 23px;
   color: #bcd391;
-}
-.timeline-scale {
-  display: flex;
-  justify-content: space-between;
-  font-size: 11px;
-  color: var(--muted);
-  margin-top: 8px;
 }
 .swatches {
   display: flex;
@@ -1687,16 +1726,6 @@ header {
   .editor-heading .row > .primary {
     flex: 1;
   }
-  .playback {
-    font-size: 10px;
-  }
-  .timeline {
-    padding: 12px;
-  }
-  .timeline-toolbar {
-    flex-wrap: wrap;
-    gap: 10px;
-  }
   .empty {
     text-align: center;
     padding: 20px;
@@ -1806,14 +1835,6 @@ header {
     flex: 1;
     min-height: 0;
   }
-  .playback-label {
-    display: none;
-  }
-  .playback {
-    justify-content: center;
-    gap: 20px;
-    flex: none;
-  }
   .editor-heading {
     display: flex;
     flex-wrap: nowrap;
@@ -1867,11 +1888,18 @@ header {
   .export-label-short {
     display: inline;
   }
-  .save-action .label-text {
+  /* Edits autosave a second after you stop touching them and the state reads
+     out under the title, so the manual button is only spending bar width that
+     undo and redo use better. */
+  .save-action {
     display: none;
   }
-  .save-action {
-    padding: 11px;
+  .history-action {
+    min-width: 44px;
+    min-height: 44px;
+    display: grid;
+    place-items: center;
+    padding: 0;
   }
   .editor-heading .primary {
     padding: 11px 14px;
@@ -1884,9 +1912,10 @@ header {
     min-height: 140px;
     border-radius: 0;
     border-width: 0 0 1px;
-    /* Top/side padding kept >= the crop overlay's handle overhang (10px) so
-       a handle at the frame's edge is never clipped. */
-    padding: 12px 12px 24px;
+    /* Padding does nothing for the absolutely positioned layers below -- their
+       containing block is the padding box -- so the inset lives in their own
+       max-height instead, and only Free hand crop still pays for it. */
+    padding: 0;
   }
   /* Positioned rather than flex-centred on purpose: `max-height: 100%` does not
      resolve against a flex-sized parent, so an in-flow canvas kept its full
@@ -1894,68 +1923,36 @@ header {
   .preview-stage canvas,
   .source-video-visible,
   .crop-overlay,
-  .text-drag-frame {
+  .text-drag-frame,
+  .video-pan-layer {
     position: absolute;
     inset: 0;
     margin: auto;
-    max-width: calc(100% - 24px);
-    /* Leaves clearance for the size label pinned at the bottom of the stage. */
-    max-height: calc(100% - 54px);
-  }
-  .canvas-label {
-    bottom: 7px;
-    font-size: 11px;
+    max-width: 100%;
+    max-height: 100%;
   }
 
-  /* Playback: one obvious, large control. */
-  .playback {
-    padding: 10px 16px;
-    font-size: 13px;
-  }
-  .play-button {
-    width: 50px;
-    height: 50px;
-  }
-
-  /* Timeline: bigger clips and a scrubber that a thumb can actually grab.
-     Capped to the same small share of the screen as an open tool panel --
-     the video stays the dominant thing on screen whether or not a tool
-     sheet happens to be open, not just when one is. */
-  .timeline {
-    border-width: 1px 0 0;
-    border-radius: 0;
-    padding: 10px 12px;
-    background: transparent;
+  /* Transport: still a 44px-class target, but a strip rather than a block. */
+  .player-bar {
     flex: none;
-    height: 16vh;
-    overflow-y: auto;
-    overscroll-behavior: contain;
+    gap: 10px;
+    padding: 6px 12px 8px;
+    font-size: 12px;
   }
-  .timeline .hint {
+  .player-play {
+    width: 38px;
+    height: 38px;
+  }
+
+  /* Clips panel: the two actions and the track have to fit the same drawer
+     height as every other tool, so the explanatory line stands down. */
+  .clips-hint {
     display: none;
   }
-  .timeline-toolbar {
-    flex-wrap: nowrap;
-    margin-bottom: 12px;
-  }
-  .timeline-toolbar strong {
-    font-size: 13px;
-  }
-  .timeline-toolbar .row {
-    gap: 4px;
-  }
-  .timeline-toolbar .row > button {
-    min-width: 44px;
-    min-height: 44px;
-    border-radius: 10px;
-    background: var(--raised);
-  }
+
   .clip {
     min-height: 54px;
     font-size: 11px;
-  }
-  .timeline .hint {
-    font-size: 12px;
   }
   input[type="range"] {
     -webkit-appearance: none;
@@ -2023,7 +2020,7 @@ header {
   .tool-tabs button.active {
     background: transparent;
   }
-  /* Collapsed by default so the timeline stays visible until a tool is picked. */
+  /* Collapsed by default: until a tool is picked the video gets the screen. */
   .tool-body {
     display: none;
   }
@@ -2043,11 +2040,6 @@ header {
   }
   .inspector.sheet-open {
     border-radius: 16px 16px 0 0;
-  }
-  /* While a panel is open the clip track is the least useful thing on screen,
-     so it yields its height to the video instead. */
-  .edit-workspace:has(.inspector.sheet-open) .timeline {
-    display: none;
   }
   .sheet-header {
     display: flex;
@@ -2192,31 +2184,17 @@ header {
 }
 
 /* A phone held sideways has very little height to spend, so trim the chrome
-   around the preview rather than letting it push the timeline off-screen. */
+   around the preview rather than letting it push the tools off-screen. */
 @media (max-width: 900px) and (max-height: 520px) {
   .editor-heading {
     padding: 5px 10px;
   }
   .preview-stage {
     height: 54vh;
-    /* Top/side padding kept >= the crop overlay's handle overhang (10px). */
-    padding: 10px 10px 20px;
+    padding: 0;
   }
-  .canvas-label {
-    display: none;
-  }
-  .playback {
-    padding: 6px 16px;
-  }
-  .play-button {
-    width: 42px;
-    height: 42px;
-  }
-  .timeline {
-    padding: 10px 12px;
-  }
-  .timeline .hint {
-    display: none;
+  .player-bar {
+    padding: 4px 12px 6px;
   }
   .tool-tabs button {
     min-height: 50px;

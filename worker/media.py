@@ -233,8 +233,9 @@ def render(job, root):
     base_y = (height - info['height'] * scale) / 2
     dw = max(2, round(cw * scale) // 2 * 2)
     dh = max(2, round(ch * scale) // 2 * 2)
-    dx = round(base_x + cx * scale)
-    dy = round(base_y + cy * scale)
+    pan = spec.get('offset') or {}
+    dx = round(base_x + cx * scale + float(pan.get('x') or 0) * width)
+    dy = round(base_y + cy * scale + float(pan.get('y') or 0) * height)
     filters = [f'[0:v]crop={cw}:{ch}:{cx}:{cy},scale={dw}:{dh},setsar=1,fps=30[video]', f'[1:v]fps=30,setsar=1[bg]', f'[bg][video]overlay={dx}:{dy}:shortest=1[base0]']
     chain, previous = overlay_filters(overlays)
     filters += chain

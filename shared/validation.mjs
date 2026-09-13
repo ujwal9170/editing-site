@@ -9,6 +9,8 @@ export const textColors = [
 ];
 export const fonts = ["Inter", "DM Sans", "Montserrat", "Roboto"];
 const unit = z.number().finite().min(0).max(1);
+// Pan is signed: a fraction of the canvas the drawn video is nudged by.
+const pan = z.number().finite().min(-1).max(1);
 export const editSchema = z.object({
   version: z.literal(1),
   canvas: z.object({
@@ -25,6 +27,9 @@ export const editSchema = z.object({
       (c) => c.x + c.width <= 1.001 && c.y + c.height <= 1.001,
       "Crop exceeds source bounds",
     ),
+  // Older projects predate panning, so an absent offset means "centred" rather
+  // than an invalid edit -- the default is filled in on their next save.
+  offset: z.object({ x: pan, y: pan }).default({ x: 0, y: 0 }),
   segments: z
     .array(
       z
@@ -153,6 +158,7 @@ export function initialEdit(durationMs) {
       background: { type: "solid", colors: ["#111827", "#7C3AED"], angle: 135 },
     },
     crop: { x: 0, y: 0, width: 1, height: 1 },
+    offset: { x: 0, y: 0 },
     segments: [{ startMs: 0, endMs: durationMs, enabled: true }],
     textOverlays: [],
     audio: { mode: "original", derivativeId: null },
