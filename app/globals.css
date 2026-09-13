@@ -1206,41 +1206,37 @@ header {
   border-radius: 3px;
   background: var(--accent);
 }
-/* Corner handles: an L-shaped bracket, resizing both axes at once. */
+/* Corner handles: a plain dot, resizing both axes at once -- kept as simple
+   as the edge grips, no bracket/chevron shape pointing off the box. */
 .crop-handle-tl,
 .crop-handle-tr,
 .crop-handle-bl,
 .crop-handle-br {
-  width: 22px;
-  height: 22px;
+  width: 16px;
+  height: 16px;
+  border-radius: 50%;
+  background: var(--accent);
+  border: 2px solid #1a1d20;
 }
 .crop-handle-tl {
-  left: -10px;
-  top: -10px;
+  left: -8px;
+  top: -8px;
   cursor: nwse-resize;
-  border-top: 4px solid var(--accent);
-  border-left: 4px solid var(--accent);
 }
 .crop-handle-tr {
-  right: -10px;
-  top: -10px;
+  right: -8px;
+  top: -8px;
   cursor: nesw-resize;
-  border-top: 4px solid var(--accent);
-  border-right: 4px solid var(--accent);
 }
 .crop-handle-bl {
-  left: -10px;
-  bottom: -10px;
+  left: -8px;
+  bottom: -8px;
   cursor: nesw-resize;
-  border-bottom: 4px solid var(--accent);
-  border-left: 4px solid var(--accent);
 }
 .crop-handle-br {
-  right: -10px;
-  bottom: -10px;
+  right: -8px;
+  bottom: -8px;
   cursor: nwse-resize;
-  border-bottom: 4px solid var(--accent);
-  border-right: 4px solid var(--accent);
 }
 .freehand-toggle {
   margin-top: 4px;

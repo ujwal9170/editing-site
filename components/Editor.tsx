@@ -155,6 +155,16 @@ export default function Editor({
     setFuture([]);
     setEdit(next);
   }
+  // Leaving Free hand (Done, closing the sheet, switching tools) must never
+  // silently drop a drag that was still in flight -- flush whatever was last
+  // on screen into the real edit first, so what you saw is what you get.
+  function exitFreehand() {
+    setLiveCrop((c) => {
+      if (c) change({ ...edit, crop: c });
+      return null;
+    });
+    setFreehand(false);
+  }
   function updateOverlay(id: string, changes: Partial<Overlay>) {
     change({
       ...edit,
@@ -742,13 +752,13 @@ export default function Editor({
                   // is always visible so this only ever switches tabs.
                   if (tab === key) {
                     setSheetOpen((v) => !v);
-                    setFreehand(false);
+                    exitFreehand();
                     setLiveTextPos(null);
                     setSelectedTextId(null);
                   } else {
                     setTab(key);
                     setSheetOpen(true);
-                    if (key !== "crop") setFreehand(false);
+                    if (key !== "crop") exitFreehand();
                     if (key !== "text") {
                       setLiveTextPos(null);
                       setSelectedTextId(null);
@@ -769,7 +779,7 @@ export default function Editor({
                 aria-label="Close panel"
                 onClick={() => {
                   setSheetOpen(false);
-                  setFreehand(false);
+                  exitFreehand();
                   setLiveTextPos(null);
                   setSelectedTextId(null);
                 }}
@@ -787,7 +797,7 @@ export default function Editor({
                 </button>
                 <hr />
                 {(
-                  ["left", "right", "top", "bottom"] as const
+                  ["top", "bottom", "left", "right"] as const
                 ).map((edge) => {
                   const c = edit.crop;
                   // Each edge is fully independent: it moves only that one
@@ -873,10 +883,7 @@ export default function Editor({
                   Touch an edge or corner on the video and drag to crop from
                   that side.
                 </p>
-                <button
-                  className="primary wide"
-                  onClick={() => setFreehand(false)}
-                >
+                <button className="primary wide" onClick={exitFreehand}>
                   <Check size={16} /> Done
                 </button>
                 <button
