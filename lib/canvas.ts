@@ -28,6 +28,18 @@ export function clampCrop(crop: Crop): Crop {
     y: Math.min(1 - height, Math.max(0, crop.y)),
   };
 }
+// The fixed factor compose() scales the *full, uncropped* source by to fit
+// the canvas -- shared so a screen-pixel drag (e.g. repositioning a crop
+// vertically) can be converted to the same source-fraction units without
+// drifting from what actually gets drawn.
+export function fitScale(
+  canvasWidth: number,
+  canvasHeight: number,
+  sourceWidth: number,
+  sourceHeight: number,
+) {
+  return Math.min(canvasWidth / sourceWidth, canvasHeight / sourceHeight);
+}
 export type Context2D = CanvasRenderingContext2D | OffscreenCanvasRenderingContext2D;
 export function background(
   ctx: Context2D,
@@ -125,7 +137,7 @@ export function compose(
     // never itself rescales or reflows. Moving one edge only reveals or
     // hides background at that edge; every untouched edge stays exactly
     // where it was. worker/media.py's render() mirrors this exactly.
-    const scale = Math.min(width / sourceWidth, height / sourceHeight);
+    const scale = fitScale(width, height, sourceWidth, sourceHeight);
     const baseX = (width - sourceWidth * scale) / 2,
       baseY = (height - sourceHeight * scale) / 2;
     const w = Math.floor((sw * scale) / 2) * 2,

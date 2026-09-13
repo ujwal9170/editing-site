@@ -36,6 +36,7 @@ import {
   clampCrop,
   MIN_CROP,
   measureOverlay,
+  fitScale,
   type Crop as CropRect,
 } from "@/lib/canvas";
 import type { Edit, Overlay, Project } from "@/lib/types";
@@ -88,11 +89,23 @@ export default function Editor({
     derived = useRef<HTMLAudioElement>(null),
     canvas = useRef<HTMLCanvasElement>(null),
     textFrame = useRef<HTMLDivElement>(null),
+    panGuide = useRef<HTMLSpanElement>(null),
     current = useRef(edit),
     revision = useRef(initial.revision),
     saveChain = useRef<Promise<any>>(Promise.resolve()),
     abort = useRef<AbortController | null>(null),
     alive = useRef(true);
+  // Live vertical-reposition drag on the composited preview (see panDown
+  // below). Kept off React state entirely -- read straight from the draw
+  // loop -- so 60fps pointermove never touches the undo stack or autosave;
+  // only pointerup commits a single change().
+  const liveCropY = useRef<number | null>(null),
+    panDrag = useRef<{
+      startY: number;
+      startCropY: number;
+      boxHeightPx: number;
+      moved: boolean;
+    } | null>(null);
   const media = initial.media!,
     duration = media.duration;
   const latest = useRef({ edit, name, caption });
@@ -231,7 +244,7 @@ export default function Editor({
   }, [edit, name, caption]); // Serialized saves prevent overlapping revision writes.
   useEffect(() => {
     let frame: number;
-    let lastEdit: Edit | null = null, lastTime = -1, lastDraw = 0, lastReady = -1;
+    let lastEdit: Edit | null = null, lastTime = -1, lastDraw = 0, lastReady = -1, lastCropY: number | null = null;
     const draw = () => {
       const v = video.current,
         ctx = canvas.current?.getContext("2d");
@@ -255,12 +268,26 @@ export default function Editor({
           }
         }
         const now = performance.now();
-        if (now - lastDraw >= 32 && (lastEdit !== current.current || lastTime !== v.currentTime || lastReady !== v.readyState)) {
-          preview(ctx, v, current.current);
+        if (
+          now - lastDraw >= 32 &&
+          (lastEdit !== current.current ||
+            lastTime !== v.currentTime ||
+            lastReady !== v.readyState ||
+            lastCropY !== liveCropY.current)
+        ) {
+          const drawEdit =
+            liveCropY.current != null
+              ? {
+                  ...current.current,
+                  crop: { ...current.current.crop, y: liveCropY.current },
+                }
+              : current.current;
+          preview(ctx, v, drawEdit);
           lastDraw = now;
           lastEdit = current.current;
           lastTime = v.currentTime;
           lastReady = v.readyState;
+          lastCropY = liveCropY.current;
         }
       }
       frame = requestAnimationFrame(draw);
@@ -291,6 +318,55 @@ export default function Editor({
       derived.current?.pause();
       setPlaying(false);
     }
+  }
+  // Reposition the crop vertically by dragging directly on the composited
+  // preview -- distinct from Free hand's edge handles (which resize the
+  // crop): this only ever translates it, x/width/height untouched. A screen
+  // pixel is converted to source-height fraction through the same fixed
+  // scale compose() draws with (fitScale), so the drag tracks 1:1 with the
+  // video regardless of how much is currently cropped. Eases toward a
+  // vertically-centered crop the closer a drag gets to center, without ever
+  // hard-locking there -- the source position always stays a free blend of
+  // the raw pointer position and center, so it can still be dragged away.
+  function panDown(e: ReactPointerEvent<HTMLDivElement>) {
+    e.currentTarget.setPointerCapture(e.pointerId);
+    const rect = e.currentTarget.getBoundingClientRect();
+    panDrag.current = {
+      startY: e.clientY,
+      startCropY: edit.crop.y,
+      boxHeightPx: rect.height,
+      moved: false,
+    };
+  }
+  function panMove(e: ReactPointerEvent<HTMLDivElement>) {
+    const d = panDrag.current;
+    if (!d || d.boxHeightPx <= 0 || !media.width || !media.height) return;
+    const pixelDy = e.clientY - d.startY;
+    if (!d.moved && Math.abs(pixelDy) < TAP_THRESHOLD) return;
+    d.moved = true;
+    const [canvasWidth, canvasHeight] = dimensions(edit.canvas.aspectRatio);
+    const scale = fitScale(canvasWidth, canvasHeight, media.width, media.height);
+    const fractionPerPx = canvasHeight / (d.boxHeightPx * scale * media.height);
+    const height = edit.crop.height;
+    const raw = Math.min(
+      1 - height,
+      Math.max(0, d.startCropY + pixelDy * fractionPerPx),
+    );
+    const centerY = (1 - height) / 2,
+      panRange = Math.max(0.0001, 1 - height),
+      snapZone = Math.min(0.06, panRange * 0.5),
+      dist = Math.abs(raw - centerY),
+      pull = dist < snapZone ? (1 - dist / snapZone) ** 2 * 0.7 : 0;
+    liveCropY.current = raw + (centerY - raw) * pull;
+    if (panGuide.current)
+      panGuide.current.style.opacity = dist < snapZone ? "1" : "0";
+  }
+  function panUp() {
+    if (panDrag.current?.moved && liveCropY.current != null)
+      change({ ...edit, crop: { ...edit.crop, y: liveCropY.current } });
+    if (panGuide.current) panGuide.current.style.opacity = "0";
+    liveCropY.current = null;
+    panDrag.current = null;
   }
   function split() {
     const ms = time * 1000,
@@ -507,6 +583,19 @@ export default function Editor({
                 }}
               />
             )}
+            {tab === "crop" && !freehand && (
+              <div
+                className="crop-pan-frame"
+                aria-hidden="true"
+                style={{ aspectRatio: "9 / 16" }}
+                onPointerDown={panDown}
+                onPointerMove={panMove}
+                onPointerUp={panUp}
+                onPointerCancel={panUp}
+              >
+                <span className="crop-pan-guide" ref={panGuide} />
+              </div>
+            )}
             {tab === "text" && (
               <div
                 className="text-drag-frame"
@@ -556,21 +645,26 @@ export default function Editor({
                   })}
               </div>
             )}
-            <span className="canvas-label">
-              {edit.canvas.aspectRatio} ·{" "}
-              {dimensions(edit.canvas.aspectRatio).join(" × ")}
-            </span>
           </div>
           <div className="playback">
-            <span className="playback-label">PREVIEW</span>
             <button
               aria-label={playing ? "Pause video" : "Play video"}
               className="play-button"
               onClick={() => toggle().catch((e) => onError(e.message))}
             >
-              {playing ? <Pause size={19} /> : <Play size={19} />}
+              {playing ? <Pause size={15} /> : <Play size={15} />}
             </button>
-            <span>
+            <input
+              aria-label="Seek"
+              type="range"
+              className="scrub-bar"
+              min="0"
+              max={duration}
+              step="0.01"
+              value={time}
+              onChange={(e) => seek(Number(e.target.value))}
+            />
+            <span className="playback-time">
               {clock(time)} / {clock(duration)}
             </span>
           </div>
