@@ -2,7 +2,7 @@
 
 A modular Instagram, YouTube and TikTok video workspace: import a clip and caption, keep it in Media, edit it, and save a Reel-format MP4 plus its post caption in Edited Videos.
 
-**Status: runnable development version.** The website and worker are implemented. This is a shared workspace for a small team; separate user accounts and production cloud services are still planned. AI caption generation is intentionally deferred.
+**Status: runnable development version.** Per-user private workspaces are implemented. Production cloud services and AI caption generation are still deferred. Exports are device-only; see [device exports and testing](docs/DEVICE_EXPORTS.md).
 
 ## Run locally
 
@@ -49,8 +49,7 @@ Optional settings are documented in `.env.example`. Copy it to `.env` when overr
 - Timeline split, disable/delete and restore; export skips disabled segments. Timings remain in source coordinates.
 - Original audio, mute, Kim Vocal 2 vocal isolation and instrumental residual (`original - estimated vocals`), preview and apply.
 - Browser audio processing: WebGPU preferred, WASM fallback (up to four threads with cross-origin isolation), exact 7680-point FFT, 44.1 kHz stereo, fixed model tensor, two-pass denoise and overlap-add. All DSP runs in a dedicated Worker; browser decoding precedes the Worker.
-- FFmpeg MP4 export with H.264, AAC 48 kHz, 30 fps, even dimensions, `yuv420p`, fast-start, 20 Mbps video cap and preserved captions as separate text downloads. 1080p or 720p output quality.
-- On-device export (WebCodecs, via `mediabunny`): renders crop, background, text overlays, trim and original/instrument-removal audio entirely in the browser using the same canvas compositing as the live preview, skipping the server's FFmpeg job. Unsupported browsers or audio modes other than original/instrument-removal fall back to the server path. The server accepts the finished file as-is (probe + thumbnail only, no re-encode).
+- Device-only MP4 export: 720p/1080p, H.264/AAC, 30 fps, crop/background/text/cuts, original/mute/applied processed audio. A dedicated browser worker and app-wide queue let employees edit another video during export, with progress and cancellation. No server-render option or fallback; the server only validates and stores the finished video and generates a thumbnail.
 - Export library with playback, full caption preview, a top Copy caption button with success feedback, video/caption downloads and deletion. Empty captions disable copying; blocked clipboard access selects the text for manual copying. Source/project stay intact when deleting an export.
 
 Source imports are converted to a high-quality H.264 editing copy (CRF 18). This is not a bit-for-bit copy of the platform's original file. Export is another encode. Instagram upload acceptance has not been tested against a real account.
@@ -76,7 +75,7 @@ Edit state is versioned JSON; source files are immutable after import. Backgroun
 
 `runtime/` holds SQLite, media, project derivatives and exports. Keep it on persistent storage and back it up. Opening a project refreshes its source's retention. Expired sources make associated projects unavailable until reimport. Exports also expire after the same retention window (`SOURCE_RETENTION_DAYS`, default 7 days) unless deleted sooner.
 
-Current development adapters use SQLite, a single worker queue, and local files. PostgreSQL, Redis/BullMQ, S3/R2 signed storage, per-user ownership and resilient distributed jobs remain part of the [target plan](docs/PRODUCT_PLAN.md). The application does not claim those cloud services are already implemented.
+Current development adapters use SQLite, a single server media-job queue, local files and per-user ownership. PostgreSQL, Redis/BullMQ, S3/R2 signed storage and resilient distributed jobs remain part of the [target plan](docs/PRODUCT_PLAN.md).
 
 ## Verification
 

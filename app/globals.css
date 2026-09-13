@@ -1914,3 +1914,10 @@ header {
     max-height: 58vh;
   }
 }
+/* Persistent across editor navigation; compact/collapsible on phones. */
+.device-export-queue { position: fixed; right: 16px; bottom: 86px; z-index: 45; width: min(360px, calc(100vw - 32px)); background: #191d1e; border: 1px solid #48533a; border-radius: 14px; padding: 12px; box-shadow: 0 8px 28px #0008; }
+.device-export-queue .hint { font-size: 12px; margin: 8px 0; }
+.device-export-rows { max-height: 30vh; overflow-y: auto; }
+.device-export-row { padding: 10px 0; border-top: 1px solid #343a3c; }
+.device-export-row strong { display: block; overflow-wrap: anywhere; font-size: 13px; }
+.device-export-row p { font-size: 12px; margin: 4px 0; }

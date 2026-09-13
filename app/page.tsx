@@ -26,6 +26,8 @@ import {
 import { api, fileUrl, clock, size, awaitJob } from "@/lib/api";
 import type { Media, Project, Export, Job } from "@/lib/types";
 import Editor from "@/components/Editor";
+import DeviceExportQueue from "@/components/DeviceExportQueue";
+import { useDeviceExports } from "@/lib/useDeviceExports";
 import CaptionPreview from "@/components/CaptionPreview";
 import ProjectCard from "@/components/ProjectCard";
 import MediaCard from "@/components/MediaCard";
@@ -50,6 +52,7 @@ type AdminUser = {
 };
 
 export default function Studio() {
+  const deviceExports = useDeviceExports();
   const [view, setView] = useState("media"),
     [media, setMedia] = useState<Media[]>([]),
     [projects, setProjects] = useState<Project[]>([]),
@@ -257,6 +260,7 @@ export default function Studio() {
     });
   }
   async function signOut() {
+    deviceExports.clear();
     await api("/auth/logout", { method: "POST" }).catch(() => {});
     setAuthed(false);
     setProject(null);
@@ -570,10 +574,7 @@ export default function Studio() {
             key={project.id}
             initial={project}
             onError={setError}
-            onExport={() => {
-              setView("exports");
-              refresh();
-            }}
+            onQueue={deviceExports.enqueue}
             onSaved={(p) => setProject(p)}
             onBack={() => setProject(null)}
           />
@@ -1104,6 +1105,8 @@ export default function Studio() {
           </section>
         </div>
       )}
+      <DeviceExportQueue rows={deviceExports.rows} cancel={deviceExports.cancel} dismiss={deviceExports.dismiss}
+        openExports={() => { setView("exports"); void refresh(); }} />
       {captionPreview && (
         <CaptionPreview
           key={captionPreview.id}

@@ -134,7 +134,7 @@ const OVERLAY_PADDING = 2;
 // identical, then cropped to the pixels it actually covers. The worker
 // composites that box at (x, y) instead of alpha-blending a whole transparent
 // frame per overlay, which is where most of the render time used to go.
-function drawnBounds(
+export function drawnBounds(
   ctx: CanvasRenderingContext2D,
   width: number,
   height: number,
