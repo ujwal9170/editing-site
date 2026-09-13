@@ -3,6 +3,12 @@ import { spawnSync } from "node:child_process";
 import path from "node:path";
 import assert from "node:assert/strict";
 const base = process.env.SMOKE_ORIGIN || "http://127.0.0.1:4174";
+if (!process.env.SMOKE_USERNAME || !process.env.SMOKE_PASSWORD)
+  throw new Error("Set SMOKE_USERNAME and SMOKE_PASSWORD for an existing disposable QA account.");
+const login = await fetch(base + "/api/auth", { method: "POST", headers: { "Content-Type": "application/json" },
+  body: JSON.stringify({ username: process.env.SMOKE_USERNAME, password: process.env.SMOKE_PASSWORD }) });
+if (!login.ok) throw new Error("QA account login failed.");
+const cookie = login.headers.get("set-cookie").split(";")[0];
 const python =
   process.env.PYTHON ||
   path.resolve(
@@ -16,7 +22,7 @@ const fixture = spawnSync(python, ["worker/fixture.py", "work-test"], {
 });
 if (fixture.status) throw new Error(fixture.stderr);
 async function api(route, opts = {}) {
-  const r = await fetch(base + "/api" + route, opts);
+  const r = await fetch(base + "/api" + route, { ...opts, headers: { ...opts.headers, cookie } });
   const body = await r.json();
   if (!r.ok) throw new Error(JSON.stringify(body));
   return body;
@@ -42,7 +48,7 @@ const media = (await api("/media")).find((m) => m.id === imported.media.id);
 assert.equal(media.status, "ready");
 assert.ok(Math.abs(media.duration - 6) < 0.2);
 const stream = await fetch(base + `/api/files/media/${media.id}/file`, {
-  headers: { Range: "bytes=0-99" },
+  headers: { Range: "bytes=0-99", cookie },
 });
 assert.equal(stream.status, 206);
 const p = await api("/projects", {
@@ -83,7 +89,7 @@ const saved = await api(`/projects/${p.id}`, {
 });
 const conflict = await fetch(base + `/api/projects/${p.id}`, {
   method: "PATCH",
-  headers: { "Content-Type": "application/json" },
+  headers: { "Content-Type": "application/json", cookie },
   body: JSON.stringify({
     name: p.name,
     caption: "",
@@ -92,64 +98,16 @@ const conflict = await fetch(base + `/api/projects/${p.id}`, {
   }),
 });
 assert.equal(conflict.status, 409);
-const png = async (name) =>
-  "data:image/png;base64," +
-  (await readFile("work-test/" + name)).toString("base64");
-const rendered = await api(`/projects/${p.id}/renders`, {
-  method: "POST",
-  headers: { "Content-Type": "application/json" },
-  body: JSON.stringify({
-    revision: saved.revision,
-    quality: "1080p",
-    background: await png("background.png"),
-    overlays: [{ png: await png("overlay.png"), x: 0, y: 0 }],
-  }),
-});
-const result = await wait(rendered.job.id);
-const output = (await api("/exports")).find((e) => e.id === result.resultId);
-assert.ok(Math.abs(output.duration - 4) < 0.15);
-assert.equal(output.width, 1080);
-assert.equal(output.height, 1920);
-assert.equal(output.caption, "Caption smoke test ✓");
-const rendered720 = await api(`/projects/${p.id}/renders`, {
-  method: "POST",
-  headers: { "Content-Type": "application/json" },
-  body: JSON.stringify({
-    revision: saved.revision,
-    quality: "720p",
-    background: await png("background-720.png"),
-    overlays: [{ png: null, x: 0, y: 0 }],
-  }),
-});
-const result720 = await wait(rendered720.job.id);
-const output720 = (await api("/exports")).find(
-  (e) => e.id === result720.resultId,
-);
-assert.equal(output720.width, 720);
-assert.equal(output720.height, 1280);
-console.log(
-  JSON.stringify(
-    {
-      passed: true,
-      mediaId: media.id,
-      projectId: p.id,
-      exportId: output.id,
-      duration: output.duration,
-      dimensions: [output.width, output.height],
-      checks: [
-        "upload",
-        "normalize",
-        "range playback",
-        "save",
-        "revision conflict",
-        "crop",
-        "overlay",
-        "split/delete",
-        "MP4 export",
-        "caption persistence",
-      ],
-    },
-    null,
-    2,
-  ),
-);
+for (const quality of ["720p", "1080p"]) {
+  const { ticketId } = await api(`/projects/${p.id}/renders/device/prepare`, {
+    method: "POST", headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ revision: saved.revision, quality }),
+  });
+  await api(`/device-exports/${ticketId}`, { method: "DELETE" });
+}
+const disabled = await fetch(base + `/api/projects/${p.id}/renders`, { method: "POST", headers: { cookie } });
+assert.equal(disabled.status, 410);
+console.log(JSON.stringify({ passed: true, mediaId: media.id, projectId: p.id,
+  checks: ["authenticated upload", "normalize", "range playback", "revision conflict", "720p/1080p snapshots", "server rendering disabled"],
+  next: "Open the QA edit in the browser. Export both resolutions, navigate to another edit while rendering, and test Cancel. This Node script does not exercise browser codecs."
+}, null, 2));

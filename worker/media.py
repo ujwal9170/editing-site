@@ -34,7 +34,9 @@ def probe(file):
     seconds = int(duration[1]) * 3600 + int(duration[2]) * 60 + float(duration[3])
     if not math.isfinite(seconds) or seconds <= 0 or seconds > 900:
         raise ValueError('Videos must be between 0 and 15 minutes.')
-    return {'duration': seconds, 'width': int(size[1]) if size else 0, 'height': int(size[2]) if size else 0, 'hasAudio': 'Audio:' in text}
+    return {'duration': seconds, 'width': int(size[1]) if size else 0, 'height': int(size[2]) if size else 0, 'hasAudio': 'Audio:' in text,
+            'h264': bool(re.search(r'Video: h264\b', video)), 'aac': bool(re.search(r'Audio: aac\b', text)),
+            'mp4': bool(re.search(r'Input #0, [^\n]*mp4', text))}
 
 
 def thumbnail(file, target):
@@ -135,11 +137,19 @@ def accept(job, root):
         raise ValueError('This file does not contain a video stream.')
     if abs(info['duration'] - job['expectedDuration']) > 1.0:
         raise ValueError('Exported video duration does not match the edited timeline.')
+    expected = (720, 1280) if job['quality'] == '720p' else (1080, 1920)
+    if (info['width'], info['height']) != expected or not info['mp4'] or not info['h264'] or (info['hasAudio'] and not info['aac']):
+        raise ValueError('Export must be a Reel-size H.264 MP4 with AAC audio (or muted), matching the chosen quality.')
     target = root / (job['id'] + '.mp4')
     source.rename(target)
     thumb = root / (job['id'] + '.jpg')
-    thumbnail(target, thumb)
-    return {**info, 'file': target.name, 'thumbnail': thumb.name, 'size': target.stat().st_size}
+    try:
+        thumbnail(target, thumb)
+        return {**info, 'file': target.name, 'thumbnail': thumb.name, 'size': target.stat().st_size}
+    except Exception:
+        target.unlink(missing_ok=True)
+        thumb.unlink(missing_ok=True)
+        raise
 
 
 def isolate(job, root):

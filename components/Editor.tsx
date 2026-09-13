@@ -21,7 +21,6 @@ import {
   ChevronDown,
   ChevronLeft,
   Smartphone,
-  Server,
   X,
   Grid3x3,
   RotateCcw,
@@ -29,7 +28,6 @@ import {
 } from "lucide-react";
 import { api, fileUrl, clock, awaitJob } from "@/lib/api";
 import {
-  artwork,
   preview,
   fonts,
   textColors,
@@ -41,17 +39,18 @@ import {
   type Crop as CropRect,
 } from "@/lib/canvas";
 import type { Edit, Overlay, Project } from "@/lib/types";
+import type { ExportTask } from "@/lib/useDeviceExports";
 
 export default function Editor({
   initial,
   onError,
-  onExport,
+  onQueue,
   onSaved,
   onBack,
 }: {
   initial: Project;
   onError: (e: string) => void;
-  onExport: () => void;
+  onQueue: (task: ExportTask) => Promise<void>;
   onSaved: (p: Project) => void;
   onBack?: () => void;
 }) {
@@ -74,11 +73,9 @@ export default function Editor({
       mode: string;
     } | null>(null),
     [quality, setQuality] = useState<"1080p" | "720p">("1080p"),
-    [destination, setDestination] = useState<"server" | "device">("server"),
     [exportMenuOpen, setExportMenuOpen] = useState(false),
     [sheetOpen, setSheetOpen] = useState(false),
     [deviceSupported, setDeviceSupported] = useState(false),
-    [deviceEligible, setDeviceEligible] = useState(false),
     [freehand, setFreehand] = useState(false),
     [liveCrop, setLiveCrop] = useState<CropRect | null>(null),
     [liveTextPos, setLiveTextPos] = useState<{
@@ -141,15 +138,6 @@ export default function Editor({
       setDeviceSupported(deviceExportSupported()),
     );
   }, []);
-  useEffect(() => {
-    import("@/lib/deviceExport").then(({ deviceExportEligible }) =>
-      setDeviceEligible(deviceExportEligible(edit.audio.mode)),
-    );
-  }, [edit.audio.mode]);
-  useEffect(() => {
-    if (destination === "device" && (!deviceSupported || !deviceEligible))
-      setDestination("server");
-  }, [deviceSupported, deviceEligible]);
   function change(next: Edit) {
     setPast((p) => [...p.slice(-59), edit]);
     setFuture([]);
@@ -243,6 +231,7 @@ export default function Editor({
   }, [edit, name, caption]); // Serialized saves prevent overlapping revision writes.
   useEffect(() => {
     let frame: number;
+    let lastEdit: Edit | null = null, lastTime = -1, lastDraw = 0, lastReady = -1;
     const draw = () => {
       const v = video.current,
         ctx = canvas.current?.getContext("2d");
@@ -265,7 +254,14 @@ export default function Editor({
             }
           }
         }
-        preview(ctx, v, current.current);
+        const now = performance.now();
+        if (now - lastDraw >= 32 && (lastEdit !== current.current || lastTime !== v.currentTime || lastReady !== v.readyState)) {
+          preview(ctx, v, current.current);
+          lastDraw = now;
+          lastEdit = current.current;
+          lastTime = v.currentTime;
+          lastReady = v.readyState;
+        }
       }
       frame = requestAnimationFrame(draw);
     };
@@ -314,55 +310,22 @@ export default function Editor({
     });
     setSelected(i + 1);
   }
-  async function exportOnDevice(p: Project) {
-    const { renderOnDevice } = await import("@/lib/deviceExport");
-    abort.current = new AbortController();
-    const blob = await renderOnDevice({
-      videoUrl: fileUrl("media", media.id),
-      audioUrl:
-        edit.audio.mode === "vocals-only" && edit.audio.derivativeId
-          ? fileUrl("audio", edit.audio.derivativeId)
-          : null,
-      edit,
-      quality,
-      sourceWidth: media.width,
-      sourceHeight: media.height,
-      onProgress: (s) => setAudioStatus(s),
-      signal: abort.current.signal,
-    });
-    setAudioStatus("");
-    const body = new FormData();
-    body.append("file", blob, "export.mp4");
-    const { job } = await api(
-      `/projects/${initial.id}/renders/device?revision=${p.revision}&quality=${quality}`,
-      { method: "POST", body },
-    );
-    await awaitJob(job.id);
-  }
   async function exportVideo() {
+    if (!deviceSupported) {
+      onError("Device export needs HTTPS and a supported browser with WebCodecs. Update your browser; server rendering is disabled.");
+      return;
+    }
     setRendering(true);
     onError("");
     try {
-      const p = await save();
-      if (destination === "device") {
-        if (!deviceSupported || !deviceEligible)
-          throw new Error(
-            "On-device export isn't available for this edit. Use server export instead.",
-          );
-        await exportOnDevice(p);
-      } else {
-        const images = await artwork(edit, quality);
-        const { job } = await api(`/projects/${initial.id}/renders`, {
-          method: "POST",
-          body: JSON.stringify({ ...images, revision: p.revision, quality }),
-        });
-        await awaitJob(job.id);
-      }
-      onExport();
+      const snapshot = structuredClone({ edit, name, caption });
+      const p = await save(snapshot);
+      await onQueue({ project: { ...p, media }, quality });
+      if (alive.current) setExportMenuOpen(false);
     } catch (e: any) {
       onError(e.message);
     } finally {
-      setRendering(false);
+      if (alive.current) setRendering(false);
     }
   }
   async function separate(mode: string) {
@@ -457,8 +420,8 @@ export default function Editor({
               )}{" "}
               <span className="export-label-full">
                 {rendering
-                  ? "Rendering…"
-                  : `Export ${quality}${destination === "device" ? " · this device" : ""}`}
+                  ? "Queuing…"
+                  : `Export ${quality} · this device`}
               </span>
               <span className="export-label-short">
                 {rendering ? "…" : "Export"}
@@ -482,7 +445,7 @@ export default function Editor({
                     type="radio"
                     name="quality"
                     checked={quality === "1080p"}
-                    onChange={() => setQuality("1080p")}
+                    onChange={() => { setQuality("1080p"); setExportMenuOpen(false); }}
                   />
                   1080p
                 </label>
@@ -491,39 +454,12 @@ export default function Editor({
                     type="radio"
                     name="quality"
                     checked={quality === "720p"}
-                    onChange={() => setQuality("720p")}
+                    onChange={() => { setQuality("720p"); setExportMenuOpen(false); }}
                   />
                   720p
                 </label>
-                <span className="export-options-label">Render using</span>
-                <label className="export-option-row">
-                  <input
-                    type="radio"
-                    name="destination"
-                    checked={destination === "server"}
-                    onChange={() => setDestination("server")}
-                  />
-                  <Server size={15} /> Server
-                </label>
-                <label
-                  className="export-option-row"
-                  title={
-                    !deviceSupported
-                      ? "Your browser doesn't support on-device export."
-                      : !deviceEligible
-                        ? "On-device export only supports original audio or instrument removal."
-                        : ""
-                  }
-                >
-                  <input
-                    type="radio"
-                    name="destination"
-                    disabled={!deviceSupported || !deviceEligible}
-                    checked={destination === "device"}
-                    onChange={() => setDestination("device")}
-                  />
-                  <Smartphone size={15} /> This device
-                </label>
+                <p className="hint"><Smartphone size={15} /> This device only. Exports continue while you edit another video.</p>
+                {!deviceSupported && <p role="status">Requires HTTPS and a supported WebCodecs browser.</p>}
               </div>
             )}
           </div>

@@ -480,7 +480,7 @@ test("STFT/ISTFT preserves stereo low-frequency signal and sample alignment", ()
   assert.equal(wav.getUint16(22, true), 2);
 });
 
-test("render skips blank overlays and keeps each one's own offset", async () => {
+test("legacy server-render requests cannot enqueue a CPU render", async () => {
   const root = mkdtempSync(path.join(tmpdir(), "frame-render-"));
   const queued = [];
   const repo = createRepository(root);
@@ -545,27 +545,8 @@ test("render skips blank overlays and keeps each one's own offset", async () => 
       { png, x: 240, y: 280 },
       { png: null, x: 0, y: 0 },
     ]);
-    assert.equal(response.statusCode, 202);
-    const job = queued.at(-1);
-    // Whitespace-only text draws nothing, so it never becomes a composite pass.
-    assert.equal(job.overlays.length, 1);
-    // The drawn one keeps its box offset and the server's own validated timing.
-    assert.deepEqual(job.overlays[0], {
-      file: job.overlays[0].file,
-      x: 240,
-      y: 280,
-      startMs: 0,
-      endMs: 2000,
-    });
-    assert.ok(existsSync(path.join(root, job.background)));
-    assert.ok(existsSync(path.join(root, job.overlays[0].file)));
-    // Offsets outside the canvas never reach the worker's filter graph.
-    for (const bad of [
-      [{ png, x: -4, y: 0 }, { png: null, x: 0, y: 0 }],
-      [{ png, x: 0, y: 4000 }, { png: null, x: 0, y: 0 }],
-      [{ png, x: 0, y: 0 }],
-    ])
-      assert.equal((await render(bad)).statusCode, 400);
+    assert.equal(response.statusCode, 410);
+    assert.equal(queued.length, 0);
   } finally {
     await app.close();
     repo.close();

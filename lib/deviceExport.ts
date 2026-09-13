@@ -1,147 +1,176 @@
-import {
-  Input,
-  ALL_FORMATS,
-  BlobSource,
-  Output,
-  Mp4OutputFormat,
-  BufferTarget,
-  CanvasSource,
-  VideoSampleSink,
-  AudioSampleSink,
-  AudioSampleSource,
-  QUALITY_HIGH,
-} from "mediabunny";
-import type { InputAudioTrack } from "mediabunny";
-import { dimensions, compose } from "./canvas";
+import { background, text, drawnBounds } from "./canvas";
+import { exportProfile } from "../shared/export.mjs";
 import type { Edit } from "./types";
+
+export type RenderProgress = {
+  phase: string;
+  progress: number;
+  elapsed: number;
+  fps?: number;
+};
+export type DeviceResult = {
+  blob: Blob;
+  seconds: number;
+  frames: number;
+  duration: number;
+  encoder: string;
+  resolution: number;
+};
+export type RenderRequest = {
+  source: string;
+  audioSource: string | null;
+  edit: Edit;
+  resolution: number;
+};
+export type RenderArtwork = {
+  background: ImageBitmap;
+  overlays: {
+    image: ImageBitmap;
+    x: number;
+    y: number;
+    startMs: number;
+    endMs: number;
+  }[];
+};
+
+export async function renderOnDevice(
+  request: RenderRequest,
+  signal: AbortSignal,
+  onProgress: (progress: RenderProgress) => void,
+): Promise<DeviceResult> {
+  if (!window.isSecureContext)
+    throw new Error(
+      "Device export needs HTTPS. Plain HTTP over Wi-Fi will not work; use a trusted HTTPS test address.",
+    );
+  if (!("VideoEncoder" in window) || !("OffscreenCanvas" in window))
+    throw new Error(
+      "This browser cannot export on-device. Update Safari/iOS and try again.",
+    );
+  signal.throwIfAborted();
+  // Load the exact font weights before rasterizing; fonts are never redrawn per frame.
+  await Promise.all(
+    request.edit.textOverlays.map((t) =>
+      document.fonts.load(`700 ${t.size}px "${t.font}"`, t.text || "A"),
+    ),
+  );
+  await document.fonts.ready;
+  signal.throwIfAborted();
+  const { width, height } = exportProfile(request.resolution);
+  const canvas = document.createElement("canvas");
+  canvas.width = width;
+  canvas.height = height;
+  const ctx = canvas.getContext("2d", { willReadFrequently: true })!;
+  const images: ImageBitmap[] = [];
+  let worker: Worker | undefined;
+  let wake: WakeLockSentinel | undefined;
+  try {
+    background(ctx, request.edit, width, height);
+    const bg = await createImageBitmap(canvas);
+    images.push(bg);
+    const overlays: RenderArtwork["overlays"] = [];
+    for (const overlay of request.edit.textOverlays) {
+      ctx.clearRect(0, 0, width, height);
+      text(ctx, overlay, width, height);
+      const box = drawnBounds(ctx, width, height);
+      if (!box) continue;
+      const image = await createImageBitmap(
+        canvas,
+        box.x,
+        box.y,
+        box.width,
+        box.height,
+      );
+      images.push(image);
+      overlays.push({
+        image,
+        x: box.x,
+        y: box.y,
+        startMs: overlay.startMs,
+        endMs: overlay.endMs,
+      });
+    }
+    signal.throwIfAborted();
+    if (navigator.wakeLock)
+      wake = await navigator.wakeLock.request("screen").catch(() => undefined);
+    signal.throwIfAborted();
+    worker = new Worker(new URL("./device-render.worker.ts", import.meta.url), {
+      type: "module",
+    });
+    const runningWorker = worker;
+    return await new Promise<DeviceResult>((resolve, reject) => {
+      let timeout: ReturnType<typeof setTimeout>;
+      function clean() {
+        clearTimeout(timeout);
+        signal.removeEventListener("abort", cancelled);
+      }
+      function fail(error: Error) {
+        clean();
+        reject(error);
+      }
+      function cancelled() {
+        fail(new DOMException("Export cancelled", "AbortError"));
+      }
+      function watchdog() {
+        clearTimeout(timeout);
+        timeout = setTimeout(
+          () =>
+            fail(
+              new Error(
+                "The device stopped responding. Try 720p or a shorter edit.",
+              ),
+            ),
+          90_000,
+        );
+      }
+      signal.addEventListener("abort", cancelled, { once: true });
+      runningWorker.onerror = (e) =>
+        fail(
+          new Error(
+            e.message ||
+              "Device export failed. Try 720p or an updated browser.",
+          ),
+        );
+      runningWorker.onmessage = ({ data }) => {
+        if (data.error) {
+          fail(new Error(data.error));
+          return;
+        }
+        if (data.phase) {
+          watchdog();
+          onProgress(data);
+        }
+        if (data.buffer) {
+          clean();
+          resolve({
+            blob: new Blob([data.buffer], { type: "video/mp4" }),
+            seconds: data.seconds,
+            frames: data.frames,
+            duration: data.duration,
+            encoder: data.encoder,
+            resolution: request.resolution,
+          });
+        }
+      };
+      watchdog();
+      runningWorker.postMessage(
+        { ...request, artwork: { background: bg, overlays } },
+        images,
+      );
+    });
+  } finally {
+    worker?.terminate();
+    images.forEach((image) => image.close());
+    canvas.width = canvas.height = 1;
+    await wake?.release().catch(() => {});
+  }
+}
 
 export function deviceExportSupported() {
   return (
-    typeof VideoEncoder !== "undefined" && typeof VideoDecoder !== "undefined"
+    window.isSecureContext &&
+    typeof VideoEncoder !== "undefined" &&
+    typeof VideoDecoder !== "undefined" &&
+    typeof OffscreenCanvas !== "undefined" &&
+    typeof Worker !== "undefined"
   );
-}
-
-// The only restriction left is audio mode -- crop, background and text
-// overlays are all composited on-device now via the same canvas functions
-// the live preview uses. Keep this in sync with the server route's check.
-export function deviceExportEligible(audioMode: string) {
-  return ["original", "vocals-only"].includes(audioMode);
-}
-
-export async function renderOnDevice({
-  videoUrl,
-  audioUrl,
-  edit,
-  quality,
-  sourceWidth,
-  sourceHeight,
-  onProgress,
-  signal,
-}: {
-  videoUrl: string;
-  audioUrl: string | null;
-  edit: Edit;
-  quality: "1080p" | "720p";
-  sourceWidth: number;
-  sourceHeight: number;
-  onProgress: (s: string) => void;
-  signal: AbortSignal;
-}): Promise<Blob> {
-  await document.fonts.ready;
-  const [width, height] = dimensions(edit.canvas.aspectRatio, quality);
-  const enabled = edit.segments.filter((s) => s.enabled);
-  if (!enabled.length) throw new Error("Keep at least one clip.");
-
-  onProgress("Loading source video…");
-  const videoBlob = await fetch(videoUrl, { signal }).then((r) => {
-    if (!r.ok) throw new Error("Source video unavailable");
-    return r.blob();
-  });
-  const videoInput = new Input({
-    source: new BlobSource(videoBlob),
-    formats: ALL_FORMATS,
-  });
-  const videoTrack = await videoInput.getPrimaryVideoTrack();
-  if (!videoTrack) throw new Error("No video track found in the source.");
-
-  let audioInput: Input | null = null;
-  let audioTrack: InputAudioTrack | null = null;
-  if (audioUrl) {
-    onProgress("Loading processed audio…");
-    const audioBlob = await fetch(audioUrl, { signal }).then((r) => {
-      if (!r.ok) throw new Error("Processed audio unavailable");
-      return r.blob();
-    });
-    audioInput = new Input({
-      source: new BlobSource(audioBlob),
-      formats: ALL_FORMATS,
-    });
-    audioTrack = await audioInput.getPrimaryAudioTrack();
-  } else {
-    audioTrack = await videoInput.getPrimaryAudioTrack();
-  }
-
-  const canvas = new OffscreenCanvas(width, height);
-  const ctx = canvas.getContext("2d")!;
-
-  const target = new BufferTarget();
-  const output = new Output({ format: new Mp4OutputFormat(), target });
-  const videoSource = new CanvasSource(canvas, {
-    codec: "avc",
-    quality: QUALITY_HIGH,
-  });
-  output.addVideoTrack(videoSource);
-  const audioSource = audioTrack
-    ? new AudioSampleSource({ codec: "aac", quality: QUALITY_HIGH })
-    : null;
-  if (audioSource) output.addAudioTrack(audioSource);
-
-  await output.start();
-
-  const videoSink = new VideoSampleSink(videoTrack);
-  const audioSink = audioTrack ? new AudioSampleSink(audioTrack) : null;
-
-  const totalDuration =
-    enabled.reduce((t, s) => t + (s.endMs - s.startMs), 0) / 1000;
-  let outputOffset = 0;
-
-  for (const segment of enabled) {
-    if (signal.aborted) throw new DOMException("Cancelled", "AbortError");
-    const startSec = segment.startMs / 1000,
-      endSec = segment.endMs / 1000;
-    onProgress(
-      `Rendering… ${Math.min(99, Math.round((outputOffset / totalDuration) * 100))}%`,
-    );
-    for await (const sample of videoSink.samples(startSec, endSec)) {
-      const image = sample.toCanvasImageSource();
-      compose(
-        ctx,
-        edit,
-        width,
-        height,
-        image,
-        sample.displayWidth,
-        sample.displayHeight,
-        sample.timestamp * 1000,
-      );
-      const outTimestamp = outputOffset + Math.max(0, sample.timestamp - startSec);
-      await videoSource.add(outTimestamp, sample.duration);
-      sample.close();
-    }
-    if (audioSink && audioSource) {
-      for await (const sample of audioSink.samples(startSec, endSec)) {
-        sample.setTimestamp(outputOffset + Math.max(0, sample.timestamp - startSec));
-        await audioSource.add(sample);
-        sample.close();
-      }
-    }
-    outputOffset += endSec - startSec;
-  }
-
-  onProgress("Finalizing…");
-  await output.finalize();
-  videoInput.dispose();
-  audioInput?.dispose();
-  if (!target.buffer) throw new Error("Export failed to produce output.");
-  return new Blob([target.buffer], { type: "video/mp4" });
 }
